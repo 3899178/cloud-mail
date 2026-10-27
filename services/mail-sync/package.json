@@ -1,0 +1,9 @@
+{
+  "name": "@cloud-mail/mail-sync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.18.0" },
+  "scripts": { "test": "node --test tests/core/*.test.mjs", "start": "node src/index.mjs" },
+  "dependencies": { "hono": "4.12.16", "@hono/node-server": "1.19.11" }
+}
