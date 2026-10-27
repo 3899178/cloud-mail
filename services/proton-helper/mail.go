@@ -114,7 +114,7 @@ func (s *mailSession) folders() ([]folder, error) {
 	}
 	return out, nil
 }
-func (s *mailSession) snapshot(ctx context.Context, label, cursor string, boundary int64) (snapshot, error) {
+func (s *mailSession) snapshot(ctx context.Context, label, cursor string, _ int64) (snapshot, error) {
 	result := snapshot{UIDValidity: "proton-message-id-v1", Messages: []record{}}
 	// Event expiry/reset is recovered by a complete bounded inventory, never by an IMAP UID.
 	if cursor != "" {
@@ -157,7 +157,8 @@ func (s *mailSession) snapshot(ctx context.Context, label, cursor string, bounda
 			if at < 0 {
 				return result, errSync
 			}
-			if !normalMessage(m) || at < boundary {
+			// Return complete normal metadata; the Node engine owns admission/baselines.
+			if !normalMessage(m) {
 				continue
 			}
 			r := record{ID: m.ID, StableID: m.ID, ReceivedAt: at, Unread: m.Unread != 0, MessageID: messageID(m.ExternalID), Fingerprint: m.ID}

@@ -1,5 +1,6 @@
 import { request } from 'node:http';
 import { Readable } from 'node:stream';
+import { finished } from 'node:stream/promises';
 import { lstat } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import MailComposer from 'nodemailer/lib/mail-composer/index.js';
@@ -87,7 +88,26 @@ export function createProton({ store, lifecycle, transport, clock = Date.now }) 
           folders: async () => (await request('folders')).folders,
           snapshot: (folder, { checkpoint, baselineAt }) => request('snapshot', { folder, cursor: checkpoint?.cursor || '', baselineAt }),
           validateSnapshot: async (folder, previous) => (await request('validate', { folder, cursor: previous.cursor })).valid === true,
-          fetch: (folder, message) => transport.fetch({ ...scope, op: 'fetch', folder, id: message.id }, { signal }),
+          fetch(folder, message) {
+            return new Promise((resolve, reject) => {
+              const work = lifecycle.run(ownerId, a.id, async active => {
+                let source;
+                try {
+                  source = await transport.fetch({ ...scope, op: 'fetch', folder, id: message.id }, { signal: active.signal });
+                  active.check();
+                  const abort = () => source.destroy(active.signal.reason);
+                  const completion = finished(source, { cleanup: true });
+                  active.signal.addEventListener('abort', abort, { once: true });
+                  resolve(source);
+                  try { await completion; }
+                  finally { active.signal.removeEventListener('abort', abort); }
+                } catch (error) { source?.destroy(); reject(error); throw error; }
+              });
+              // A standalone call holds admission through stream completion; engine calls
+              // inherit its current lease. Failures after headers surface on the stream.
+              work.catch(reject);
+            });
+          },
           flags: (location, unread) => request('flags', { id: location.remoteId, unread }),
           trash: location => request('trash', { id: location.remoteId }),
           async send(message, { signal: sendSignal } = {}) {

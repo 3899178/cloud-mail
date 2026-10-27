@@ -130,3 +130,62 @@ test('signed Proton HTTP interaction uses asserted owner, hides helper secrets, 
   const blocked = await send(path, { password: 'private' });assert.equal(blocked.status, 409);
   const accounts = store.accounts.list(owner);assert.ok(!JSON.stringify(accounts).includes('SECRET'));
 });
+
+test('complete Proton metadata leaves historical exclusion, later old-date admission and new-folder guards to the engine', async t => {
+  const { store, options } = await fixture(t);store.accounts.create(owner, { id: 'proton', provider: 'proton', address: 'user@proton.me' });
+  store.credentials.set(owner, 'proton', 'proton', JSON.stringify({ auth: { RefreshToken: 'private' } }));
+  const record = id => ({ id, stableId: id, fingerprint: id, receivedAt: options.clock() - 10000, unread: true });
+  let folders = ['0'];let inventory = { '0': [record('history')] };let token = 'real-event-1';const fetched = [];
+  const transport = {
+    async rpc(r) {
+      if (r.op === 'open') return { material: r.material, session: 'session', expiresAt: options.clock() + 600000 };
+      if (r.op === 'folders') return { folders: folders.map(id => ({ id, kind: 'normal' })) };
+      if (r.op === 'snapshot') return { uidValidity: 'proton-message-id-v1', cursor: token, messages: inventory[r.folder] || [] };
+      if (r.op === 'validate') return { valid: true };return { ok: true };
+    },
+    async fetch(r) { fetched.push(r.id);return Readable.from([`Subject: ${r.id}\r\n\r\nbody`]); },
+  };
+  const { createMailService } = await import('../../src/sync/service.mjs');const service = createMailService({ store, clock: options.clock, proton: { transport } });t.after(() => service.close());
+  const sync = () => service.engine.syncAccount({ ownerId: owner, accountId: 'proton' });
+  assert.equal((await sync()).status, 'active');assert.equal(store.sources.catalog(owner, 'proton').length, 1);assert.equal(store.messages.list(owner).items.length, 0);assert.deepEqual(fetched, []);
+  inventory['0'].push(record('arrived-after-baseline'));token = 'real-event-2';assert.equal((await sync()).status, 'active');
+  const published = store.messages.list(owner).items;assert.equal(published.length, 1);assert.equal(published[0].subject, 'arrived-after-baseline');assert.deepEqual(fetched, ['arrived-after-baseline']);
+  folders = ['0', '6'];inventory = { '0': [], '6': [record('history'), record('arrived-after-baseline')] };token = 'real-event-after-reset';
+  assert.equal((await sync()).status, 'active');assert.equal(store.messages.list(owner).items[0].ref, published[0].ref);assert.deepEqual(fetched, ['arrived-after-baseline']);
+  folders.push('new-rule');inventory['new-rule'] = [record('unknown-old-date')];token = 'must-not-commit';
+  const ambiguous = await sync();assert.equal(ambiguous.status, 'paused');assert.equal(ambiguous.errorCode, 'RESYNC_REQUIRED');
+  assert.equal(store.checkpoints.get(owner, 'proton', '6').cursor, 'real-event-after-reset');assert.equal(store.checkpoints.get(owner, 'proton', 'new-rule'), null);assert.equal(store.messages.list(owner).items.length, 1);
+});
+
+for (const phase of ['before-headers', 'body']) test(`cached Proton fetch inherits the current lease through ${phase} and unbind drains promptly`, async t => {
+  const { store, options } = await fixture(t);store.accounts.create(owner, { id: 'proton', provider: 'proton', address: 'user@proton.me' });
+  store.credentials.set(owner, 'proton', 'proton', JSON.stringify({ auth: { RefreshToken: 'private' } }));
+  let second = false;let openCount = 0;let activeSignal;let aborted = false;let started;let releaseStall = () => {};
+  const stalled = new Promise(resolve => { started = resolve; });
+  const transport = {
+    async rpc(r) {
+      if (r.op === 'open') { openCount++;return { material: r.material, session: 'session', expiresAt: options.clock() + 600000 }; }
+      if (r.op === 'folders') return { folders: [{ id: '0', kind: 'inbox' }] };
+      if (r.op === 'snapshot') return { uidValidity: 'proton-message-id-v1', cursor: second ? 'event-2' : 'event-1', messages: (second ? ['first', 'second'] : ['first']).map(id => ({ id, stableId: id, fingerprint: id, receivedAt: options.clock() + 1, unread: true })) };
+      if (r.op === 'validate') return { valid: true };return { ok: true };
+    },
+    async fetch(r, { signal }) {
+      if (r.id === 'first') return Readable.from(['Subject: first\r\n\r\nbody']);
+      activeSignal = signal;signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+      if (phase === 'before-headers') return new Promise((resolve,reject) => {
+        releaseStall = () => reject(Object.assign(new Error('fixture-cancelled'), { name: 'AbortError' }));signal.addEventListener('abort', releaseStall, { once: true });started();
+      });
+      const source = new Readable({ read() {} });source.push('Subject: second\r\n\r\npartial body');releaseStall = () => source.destroy();started();return source;
+    },
+  };
+  const { createMailService } = await import('../../src/sync/service.mjs');const service = createMailService({ store, clock: options.clock, proton: { transport } });t.after(() => service.close());
+  assert.equal((await service.engine.syncAccount({ ownerId: owner, accountId: 'proton' })).status, 'active');
+  second = true;const work = service.engine.syncAccount({ ownerId: owner, accountId: 'proton' });await stalled;
+  if (phase === 'body') await new Promise(resolve => setImmediate(resolve));
+  const removal = service.lifecycle.transition(owner, 'proton', { begin: () => store.accounts.setStatus(owner, 'proton', 'paused'), commit: async () => { await service.registry.invalidate(owner, 'proton');store.accounts.remove(owner, 'proton'); } });
+  try {
+    assert.equal(openCount, 1, 'second sync reused the cached helper session');assert.equal(activeSignal.aborted, true, 'cached fetch transport must see current lease abort');assert.equal(aborted, true);
+    let timer;try { await Promise.race([removal, new Promise((resolve,reject) => { timer = setTimeout(() => reject(new Error('unbind did not drain promptly')), 1000); })]); } finally { clearTimeout(timer); }
+    await work;assert.throws(() => store.accounts.get(owner, 'proton'), { code: 'NOT_FOUND' });
+  } finally { releaseStall();await Promise.allSettled([work, removal]); }
+});

@@ -61,11 +61,11 @@ func TestSnapshotRecoveryStableBoundaryAndFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Cursor != "real-event-token" || len(got.Messages) != 1 || got.Messages[0].ID != "stable-message" || got.Messages[0].StableID != "stable-message" {
+	if got.Cursor != "real-event-token" || len(got.Messages) != 2 || got.Messages[0].ID != "old" || got.Messages[1].ID != "stable-message" || got.Messages[1].StableID != "stable-message" {
 		t.Fatalf("unsafe recovery: %+v", got)
 	}
-	if got.Messages[0].MessageID != "<external@example.test>" {
-		t.Fatal("reply identity lost", got.Messages[0].MessageID)
+	if got.Messages[1].MessageID != "<external@example.test>" {
+		t.Fatal("reply identity lost", got.Messages[1].MessageID)
 	}
 	f.reset = false
 	again, err := s.snapshot(context.Background(), "0", got.Cursor, 10000)
@@ -81,6 +81,21 @@ func TestSnapshotRecoveryStableBoundaryAndFlags(t *testing.T) {
 	f.cursor = ""
 	if _, err = s.snapshot(context.Background(), "0", "", 0); err == nil {
 		t.Fatal("empty cursor accepted")
+	}
+}
+func TestSnapshotsReturnPrecutoffMetadataBeforeAndAfterBaseline(t *testing.T) {
+	f := &fixtureAPI{cursor: "first-real-event", messages: []*pm.Message{{ID: "history", Time: 1, Type: pm.MessageInbox}}}
+	s := &mailSession{api: f}
+	first, err := s.snapshot(context.Background(), "0", "", 10000)
+	if err != nil || len(first.Messages) != 1 || first.Messages[0].ID != "history" {
+		t.Fatalf("incomplete initial metadata: %+v %v", first, err)
+	}
+	f.cursor = "reset-real-event"
+	f.reset = true
+	f.messages = append(f.messages, &pm.Message{ID: "new-stable-old-date", Time: 2, Type: pm.MessageInbox})
+	second, err := s.snapshot(context.Background(), "0", first.Cursor, 10000)
+	if err != nil || len(second.Messages) != 2 || second.Messages[1].StableID != "new-stable-old-date" || second.Cursor != f.cursor {
+		t.Fatalf("lost post-baseline metadata: %+v %v", second, err)
 	}
 }
 func TestMIMEStreamsOriginalAttachmentBytes(t *testing.T) {
