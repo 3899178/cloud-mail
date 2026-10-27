@@ -18,6 +18,8 @@ Execute Tasks 1–5 first. Then execute the web/service portions of Task 7 (Linu
 
 Only after the web application is verified usable, start Task 6 Android implementation, complete Task 7 APK signing/release workflows and Task 8 Android/physical Honor acceptance. Existing SDK/signing preparation is retained; no further mobile development runs during the web delivery phase. Real-provider support remains individually verified or explicitly pending; neither a partial provider test nor a placeholder UI establishes broad compatibility.
 
+In Tasks 4–5, defer Android-specific device enrollment/notification endpoints, native-binding components and their tests to the post-web Task 6 integration phase. Their interfaces remain planned, but they do not block usable web delivery. Responsive web behavior on phone browsers remains part of Task 5. Deferred mobile controls must not appear as functional placeholders in the web application.
+
 ## Global Constraints
 
 - Preserve every existing function, account, mail, setting and deployed customization; production backup/version comparison precedes deployment.
@@ -83,6 +85,8 @@ The implementation ledger records exact exported store/adapter methods before co
 
 ### Task 4: Cloudflare gateway, unified API, cookies and devices
 
+**Web-first execution override:** Complete gateway/unified mail, cookie/Bearer migration, CSRF, invitation enforcement, safe attachment upload and web tests first. Implement the device enrollment/notification-only API subsection together with Task 6 after web rollout; keep those original requirements and tests pending until then.
+
 **Files:** mail-worker/src/{api,service,security,utils} new unified/external/device modules and necessary existing auth/registration integrations; mail-worker tests; mail-vue/src/axios/index.js and login/bootstrap migration only.
 
 **Interfaces:** Implement spec routes /api/external/accounts, /api/unified/messages and /api/devices. Cookie session is primary for browser; legacy Bearer remains accepted. Device binding uses one-time PKCE-bound code; exchanged device token has notification-only permission. Sync forwarding derives owner from existing authentication.
@@ -93,6 +97,8 @@ The implementation ledger records exact exported store/adapter methods before co
 - [ ] Run full local worker and service suites, never deploy through a test command. Commit and independent review.
 
 ### Task 5: Fixed sidebar and external/unified UI
+
+**Web-first execution override:** Deliver desktop and responsive phone-browser mail UI first. Native Android binding components are deferred to Task 6 and must not be shown as working controls before implementation.
 
 **Files:** mail-vue/src/layout/* and account/email stores/views; new external-binding/unified/native-binding components and frontend tests.
 
