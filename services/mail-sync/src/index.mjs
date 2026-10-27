@@ -20,7 +20,7 @@ for (const [provider, prefix] of [['gmail', 'GOOGLE'], ['outlook', 'MICROSOFT']]
   const clientId = process.env[`MAIL_SYNC_${prefix}_CLIENT_ID`]; const clientSecret = process.env[`MAIL_SYNC_${prefix}_CLIENT_SECRET`]; const redirectUri = process.env[`MAIL_SYNC_${prefix}_REDIRECT_URI`];
   if (clientId || clientSecret || redirectUri) { if (!clientId || !clientSecret || !redirectUri) throw new Error(`Incomplete ${prefix} OAuth configuration`); clients[provider] = { clientId, clientSecret, redirectUri }; }
 }
-const app = createSyncApp({ store, gatewayKey, clients }); gatewayKey.fill(0);
+const app = createSyncApp({ store, gatewayKey, clients, proton: { socketPath: process.env.PROTON_HELPER_SOCKET || '/run/cloud-mail-proton/helper.sock' } }); gatewayKey.fill(0);
 store.operations.recover();
 const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port });
 app.services.start();

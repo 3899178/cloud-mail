@@ -33,7 +33,7 @@ export function mountMailRoutes(app, { store, service, callbackGatewayOwner = 'o
   app.post('/v1/accounts/:id/pause', async c => {
     return service.lifecycle.transition(owner(c), c.req.param('id'), {
       begin: () => store.accounts.setStatus(owner(c), c.req.param('id'), 'paused'),
-      commit: async account => { await service.registry.invalidate(owner(c), account.id); return c.json({ account }); },
+      commit: async account => { await service.registry.invalidate(owner(c), account.id); if (account.provider === 'proton') await service.proton.cancel(owner(c), account.id); return c.json({ account }); },
     });
   });
   app.post('/v1/accounts/:id/resume', async c => {
@@ -43,6 +43,7 @@ export function mountMailRoutes(app, { store, service, callbackGatewayOwner = 'o
   app.delete('/v1/accounts/:id', async c => {
     return service.lifecycle.transition(owner(c), c.req.param('id'), { commit: async () => {
       await service.registry.invalidate(owner(c), c.req.param('id'));
+      if (store.accounts.get(owner(c), c.req.param('id')).provider === 'proton') await service.proton.cancel(owner(c), c.req.param('id'));
       store.accounts.remove(owner(c), c.req.param('id')); return c.json({ removed: true });
     } });
   });
@@ -51,6 +52,12 @@ export function mountMailRoutes(app, { store, service, callbackGatewayOwner = 'o
       const account = store.accounts.get(owner(c), c.req.param('id')); const result = await service.oauth.start(owner(c), account.id); lease.check();
       store.credentials.set(owner(c), account.id, 'protocol', JSON.stringify({ authType: 'oauth', config: mailConfig(account.provider) })); return c.json(result);
     });
+  });
+  app.post('/v1/accounts/:id/proton/start', async c => {
+    return c.json(await service.proton.start(owner(c), c.req.param('id'), json(c)));
+  });
+  app.post('/v1/accounts/:id/proton/complete', async c => {
+    return c.json(await service.proton.complete(owner(c), c.req.param('id'), json(c)));
   });
   app.post('/v1/oauth/resolve', c => {
     if (owner(c) !== callbackGatewayOwner) fail('UNAUTHORIZED'); return c.json(service.oauth.resolve(json(c).state));

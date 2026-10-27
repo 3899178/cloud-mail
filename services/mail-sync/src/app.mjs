@@ -20,10 +20,10 @@ async function boundedBody(request) {
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return bytes;
 }
-export function createSyncApp({ store, gatewayKey, clock = Date.now, registry, clients, adapters }) {
+export function createSyncApp({ store, gatewayKey, clock = Date.now, registry, clients, adapters, proton }) {
   if (!(gatewayKey instanceof Uint8Array) || gatewayKey.byteLength !== 32) fail('INVALID_KEY');
   const key = new Uint8Array(gatewayKey); const app = new Hono(); const work = createWorkLimits();
-  const service = createMailService({ store, clock, registry, clients, adapters, limits: work }); app.services = service;
+  const service = createMailService({ store, clock, registry, clients, adapters, proton, limits: work }); app.services = service;
   app.onError((error, c) => {
     const code = error instanceof MailError && statuses[error.code] ? error.code : 'INTERNAL_ERROR';
     return c.json({ error: { code } }, statuses[code] ?? 500);
