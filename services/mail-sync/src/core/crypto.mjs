@@ -16,7 +16,7 @@ export function createVault(masterKey) {
     open(ownerId, accountId, kind, envelope) {
       try {
         const e = JSON.parse(envelope); if (e.v !== 1) throw new Error();
-        const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(e.iv, 'base64url'));
+        const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(e.iv, 'base64url'), { authTagLength: 16 });
         decipher.setAAD(aad(ownerId, accountId, kind)); decipher.setAuthTag(Buffer.from(e.tag, 'base64url'));
         return Buffer.concat([decipher.update(Buffer.from(e.data, 'base64url')), decipher.final()]).toString('utf8');
       } catch { fail('CREDENTIAL_UNAVAILABLE'); }
