@@ -10,6 +10,21 @@ export function createReconciliation({ run, all, get, transaction, accountRow, m
       accountRow(who, accountId);
       return all('SELECT value FROM source_catalog WHERE owner_id=? AND account_id=? ORDER BY location', who, accountId).map(r => JSON.parse(r.value));
     },
+    identities(who, accountId) {
+      const catalog = this.catalog(who, accountId);
+      const partial = all('SELECT value FROM hydration_journal WHERE owner_id=? AND account_id=? ORDER BY source_id', who, accountId).map(r => JSON.parse(r.value));
+      const committedIds = new Set(catalog.map(c => c.sourceId));
+      return [...catalog, ...partial.filter(p => !committedIds.has(p.sourceId))];
+    },
+    journal(who, accountId, c) {
+      accountRow(who, accountId); text(c.sourceId, 512); text(c.folder, 1024); text(c.uidValidity, 128); text(c.remoteId, 512); text(c.fingerprint, 2048, true); integer(c.receivedAt);
+      if (c.admitted !== true || typeof c.unread !== 'boolean') fail('INVALID_INPUT');
+      if (c.stableId !== undefined) text(c.stableId, 512); if (c.messageId !== undefined) text(c.messageId, 8192, true);
+      const value = JSON.stringify({ folder: c.folder, uidValidity: c.uidValidity, remoteId: c.remoteId, sourceId: c.sourceId, fingerprint: c.fingerprint, stableId: c.stableId, messageId: c.messageId, admitted: true, unread: c.unread, receivedAt: c.receivedAt });
+      const size = get('SELECT COUNT(*) AS count,COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM hydration_journal WHERE owner_id=? AND account_id=?', who, accountId);
+      if (size.count >= 20000 || size.bytes + Buffer.byteLength(value) > 8 * 1024 * 1024) fail('CAPACITY_EXCEEDED');
+      run('INSERT INTO hydration_journal VALUES(?,?,?,?) ON CONFLICT(owner_id,account_id,source_id) DO UPDATE SET value=excluded.value', who, accountId, c.sourceId, value);
+    },
     ready(who, ref) {
       messageRow(who, ref);
       return Boolean(get('SELECT 1 FROM message_ready WHERE owner_id=? AND ref=?', who, ref));
@@ -33,7 +48,7 @@ export function createReconciliation({ run, all, get, transaction, accountRow, m
       if (Buffer.byteLength(JSON.stringify(clean)) > 8 * 1024 * 1024) fail('CAPACITY_EXCEEDED');
       const present = new Set(clean.filter(c => c.admitted).map(c => c.sourceId));
       // Only previously cataloged messages are candidates, never a blanket account query.
-      const deleted = [...new Set(this.catalog(who, accountId).filter(c => c.admitted && !present.has(c.sourceId)).map(c => refFor(accountId, c.sourceId)))];
+      const deleted = [...new Set(this.identities(who, accountId).filter(c => c.admitted && !present.has(c.sourceId)).map(c => refFor(accountId, c.sourceId)))];
       const sweepId = randomUUID();
       transaction(() => {
         run('DELETE FROM source_catalog WHERE owner_id=? AND account_id=?', who, accountId);
@@ -47,6 +62,7 @@ export function createReconciliation({ run, all, get, transaction, accountRow, m
         }
         run('INSERT INTO completed_sweeps VALUES(?,?,?,?)', who, accountId, sweepId, JSON.stringify(deleted));
         run('INSERT INTO sync_baselines VALUES(?,?,?) ON CONFLICT DO NOTHING', who, accountId, accountRow(who, accountId).created_at);
+        run('DELETE FROM hydration_journal WHERE owner_id=? AND account_id=?', who, accountId);
       });
       return sweepId;
     },

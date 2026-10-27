@@ -3,13 +3,14 @@ import { encodeSourceRef, fail } from '../../../../shared/unified-mail/index.mjs
 import { createWorkLimits } from '../core/limits.mjs';
 import { providerCode } from '../providers/errors.mjs';
 import { parseMime } from './mime.mjs';
+import { createAccountLifecycle } from '../core/lifecycle.mjs';
 
 const normal = new Set(['normal', 'inbox', 'archive', 'rule']);
 const location = c => JSON.stringify([c.folder, c.uidValidity, c.remoteId]);
 const digest = value => createHash('sha256').update(value).digest('hex');
-export function createSyncEngine({ store, registry, limits = createWorkLimits() }) {
+export function createSyncEngine({ store, registry, limits = createWorkLimits(), lifecycle = createAccountLifecycle({ store }) }) {
   const running = new Map(); const controllers = new Map();
-  async function synchronize({ ownerId, accountId, signal }) {
+  async function synchronize({ ownerId, accountId, signal, lease }) {
     const account = store.accounts.get(ownerId, accountId);
     if (account.status === 'paused') return account;
     store.accounts.setStatus(ownerId, accountId, 'connecting');
@@ -17,6 +18,7 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits() 
     try {
       signal?.throwIfAborted();
       session = await registry.open({ ownerId, account, signal });
+      lease.check();
       store.attachments.cleanupStages(ownerId, accountId);
       const folders = (await session.folders()).filter(f => normal.has(f.kind));
       if (folders.length > 200) fail('CAPACITY_EXCEEDED');
@@ -33,7 +35,7 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits() 
         if (metadataBytes > 8 * 1024 * 1024) fail('CAPACITY_EXCEEDED');
       }
       if (new Set(current.map(location)).size !== current.length) fail('SYNC_FAILED');
-      const previous = store.sources.catalog(ownerId, accountId);
+      const previous = store.sources.identities(ownerId, accountId);
       const currentLocations = new Set(current.map(location));
       const previousLocations = new Map(previous.map(c => [location(c), c]));
       const vanished = previous.filter(c => !currentLocations.has(location(c))); const used = new Set();
@@ -72,11 +74,15 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits() 
         await limits.parse(async () => {
           const parsed = await parseMime(await session.fetch(c.folder, { ...c.metadata, uidValidity: c.uidValidity }), { signal, stage: chunks => store.attachments.stage(ownerId, accountId, chunks) });
           try {
+            lease.check();
+            // Identity is durable BEFORE content: failed-sweep moves/deletes remain reconcilable.
+            store.sources.journal(ownerId, accountId, c);
             // Retain the previous durable checkpoint until ALL messages/attachments/folders finish.
             const checkpoint = store.checkpoints.get(ownerId, accountId, c.folder) || { cursor: '' };
             store.messages.ingest(ownerId, accountId, { folder: c.folder, folderKind: folders.find(f => f.id === c.folder).kind, checkpoint, advanceCheckpoint: false, messages: [{ ...parsed, sourceId: c.sourceId, receivedAt: c.receivedAt, unread: c.unread }] });
             store.sources.clearContent(ownerId, ref);
             for (const a of parsed.attachments) await store.attachments.put(ownerId, ref, { filename: a.filename, contentType: a.contentType, chunks: a.staged.chunks() });
+            lease.check();
             store.sources.complete(ownerId, ref);
             hydrated.add(ref);
           } finally { await parsed.cleanup(); }
@@ -86,6 +92,7 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits() 
       for (const { folder, snapshot } of snapshots) if (session.validateSnapshot && !await session.validateSnapshot(folder.id, snapshot)) fail('SYNC_FAILED');
       const finalFolders = (await session.folders()).filter(f => normal.has(f.kind)).map(f => f.id).sort();
       if (JSON.stringify(finalFolders) !== JSON.stringify(folders.map(f => f.id).sort())) fail('SYNC_FAILED');
+      lease.check();
       store.sources.commit(ownerId, accountId, { catalog: current, expectedFolders: folders.map(f => f.id), checkpoints: snapshots.map(({ folder, snapshot }) => ({ folder: folder.id, cursor: String(snapshot.cursor), uidValidity: String(snapshot.uidValidity), baselineAt: account.createdAt })) });
       for (const pending of store.sources.pendingSweeps(ownerId, accountId)) store.sources.prune(ownerId, accountId, pending);
       if (store.accounts.get(ownerId, accountId).status === 'paused') return store.accounts.get(ownerId, accountId);
@@ -93,6 +100,7 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits() 
     } catch (error) {
       const code = providerCode(error);
       const latest = store.accounts.get(ownerId, accountId); if (latest.status === 'paused') return latest;
+      if (!lease.current()) return latest;
       return store.accounts.setStatus(ownerId, accountId, code === 'AUTH_REQUIRED' ? 'needs-auth' : ['STORAGE_FULL', 'RESYNC_REQUIRED', 'CAPACITY_EXCEEDED'].includes(code) ? 'paused' : 'error', code);
     } finally { await session?.close().catch(() => {}); }
   }
@@ -102,7 +110,10 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits() 
       if (running.has(key)) return running.get(key);
       const controller = new AbortController(); controllers.set(key, controller);
       const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
-      const promise = limits.reconnect(() => synchronize({ ...options, signal })).finally(() => { running.delete(key); controllers.delete(key); });
+      let work;
+      try { work = lifecycle.run(options.ownerId, options.accountId, lease => limits.reconnect(() => synchronize({ ...options, signal: lease.signal, lease })), { signal, allowPaused: true }); }
+      catch (error) { controllers.delete(key); return Promise.reject(error); }
+      const promise = work.finally(() => { running.delete(key); controllers.delete(key); });
       running.set(key, promise); return promise;
     },
     async stopAccount(ownerId, accountId) { const key = JSON.stringify([ownerId, accountId]); controllers.get(key)?.abort(); await running.get(key); },

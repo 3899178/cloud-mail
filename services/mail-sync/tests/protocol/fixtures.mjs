@@ -1,4 +1,5 @@
-import { createServer } from 'node:tls';
+import { createServer, createSecureContext, TLSSocket } from 'node:tls';
+import { createServer as createTcpServer } from 'node:net';
 import { generate } from 'selfsigned';
 
 let certificate;
@@ -89,4 +90,39 @@ export async function smtpFixture(t) {
     });
   });
   return { ...endpoint, state };
+}
+export async function starttlsFixture(t, { advertise = true, refuse = false } = {}) {
+  // Share only ephemeral certificate material with implicit-TLS fixtures, never a real key.
+  certificate ||= generate([{ name: 'commonName', value: 'fixture.test' }], { keyType: 'ec', curve: 'P-256', algorithm: 'sha256', extensions: [{ name: 'basicConstraints', cA: true }, { name: 'subjectAltName', altNames: [{ type: 2, value: 'fixture.test' }] }] });
+  const pems = await certificate; const secureContext = createSecureContext({ key: pems.private, cert: pems.cert });
+  const sockets = new Set(); const state = { plaintextAuth: 0, tlsAuth: 0, starttls: 0, received: [] };
+  function dialogue(socket, secure) {
+    sockets.add(socket); socket.on('error', () => {}); socket.on('close', () => sockets.delete(socket));
+    let buffer = ''; let dataMode = false; const message = [];
+    const data = chunk => {
+      buffer += chunk.toString();
+      while (buffer.includes('\r\n')) {
+        const end = buffer.indexOf('\r\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+        if (dataMode) { if (line === '.') { state.received.push(message.join('\r\n')); dataMode = false; socket.write('250 accepted\r\n'); } else message.push(line); }
+        else if (/^EHLO /.test(line)) socket.write(`250-fixture\r\n${!secure && advertise ? '250-STARTTLS\r\n' : ''}250 AUTH PLAIN LOGIN\r\n`);
+        else if (line === 'STARTTLS') {
+          state.starttls++;
+          if (refuse) socket.write('454 TLS unavailable\r\n');
+          else {
+            socket.removeListener('data', data); buffer = '';
+            socket.write('220 Begin TLS\r\n', () => dialogue(new TLSSocket(socket, { isServer: true, secureContext }), true));
+          }
+        } else if (/^AUTH /.test(line)) { if (secure) state.tlsAuth++; else state.plaintextAuth++; socket.write(secure ? '235 authenticated\r\n' : '530 TLS required\r\n'); }
+        else if (/^(MAIL FROM|RCPT TO)/.test(line)) socket.write('250 ok\r\n');
+        else if (line === 'DATA') { dataMode = true; socket.write('354 send data\r\n'); }
+        else if (line === 'QUIT') socket.end('221 goodbye\r\n');
+        else socket.write('250 ok\r\n');
+      }
+    };
+    socket.on('data', data); if (!secure) socket.write('220 fixture ESMTP\r\n');
+  }
+  const server = createTcpServer(socket => dialogue(socket, false));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
+  return { port: server.address().port, ca: pems.cert, state };
 }

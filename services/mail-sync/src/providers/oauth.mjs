@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { fail } from '../../../../shared/unified-mail/index.mjs';
 import { text } from '../core/validation.mjs';
+import { createAccountLifecycle } from '../core/lifecycle.mjs';
 
 const providers = {
   gmail: { authorize: 'https://accounts.google.com/o/oauth2/v2/auth', token: 'https://oauth2.googleapis.com/token', scope: 'https://mail.google.com/' },
@@ -11,7 +12,7 @@ async function boundedJson(response) {
   for await (const chunk of response.body) { bytes += chunk.byteLength; if (bytes > 32768) fail('AUTH_REQUIRED'); chunks.push(chunk); }
   try { return JSON.parse(Buffer.concat(chunks).toString()); } catch { fail('AUTH_REQUIRED'); }
 }
-export function createOAuth({ store, clients = {}, clock = Date.now, fetcher = fetch }) {
+export function createOAuth({ store, clients = {}, clock = Date.now, fetcher = fetch, lifecycle = createAccountLifecycle({ store }) }) {
   const refreshing = new Map();
   function config(provider) {
     const client = clients[provider]; const p = providers[provider];
@@ -21,9 +22,10 @@ export function createOAuth({ store, clients = {}, clock = Date.now, fetcher = f
     if (redirect.protocol !== 'https:' || redirect.username || redirect.password || redirect.hash) fail('INVALID_INPUT');
     return { ...p, ...client };
   }
-  async function exchange(provider, parameters, previous = {}) {
+  async function exchange(provider, parameters, previous = {}, signal) {
     const c = config(provider);
-    const response = await fetcher(c.token, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15000), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId, client_secret: c.clientSecret, ...parameters }).toString() });
+    const timeout = AbortSignal.timeout(15000);
+    const response = await fetcher(c.token, { method: 'POST', redirect: 'error', signal: signal ? AbortSignal.any([timeout, signal]) : timeout, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: c.clientId, client_secret: c.clientSecret, ...parameters }).toString() });
     const data = await boundedJson(response);
     if (!response.ok || data.error) fail('AUTH_REQUIRED');
     text(data.access_token, 8192);
@@ -32,7 +34,7 @@ export function createOAuth({ store, clients = {}, clock = Date.now, fetcher = f
     text(refreshToken, 8192);
     return { accessToken: data.access_token, refreshToken, expiresAt: clock() + data.expires_in * 1000 };
   }
-  return {
+  const api = {
     async start(ownerId, accountId) {
       const account = store.accounts.get(ownerId, accountId); const c = config(account.provider);
       const verifier = randomBytes(32).toString('base64url');
@@ -42,27 +44,38 @@ export function createOAuth({ store, clients = {}, clock = Date.now, fetcher = f
       return { authorizationUrl: url.href, expiresIn: 600 };
     },
     resolve(state) { const identity = store.oauthStates.resolve(state); return { ...identity, provider: store.accounts.get(identity.ownerId, identity.accountId).provider }; },
-    async complete(ownerId, { state, code }) {
+    async complete(ownerId, { state, code }, lease) {
       text(code, 8192);
       const { accountId, value } = store.oauthStates.consume(ownerId, state);
       if (store.accounts.get(ownerId, accountId).provider !== value.provider) fail('UNAUTHORIZED');
-      const token = await exchange(value.provider, { grant_type: 'authorization_code', code, code_verifier: value.verifier, redirect_uri: value.redirectUri });
+      const token = await exchange(value.provider, { grant_type: 'authorization_code', code, code_verifier: value.verifier, redirect_uri: value.redirectUri }, {}, lease.signal);
+      lease.check();
       store.credentials.set(ownerId, accountId, 'oauth', JSON.stringify(token));
       return { accountId };
     },
-    async auth(ownerId, accountId) {
+    async auth(ownerId, accountId, lease) {
       const account = store.accounts.get(ownerId, accountId);
       const key = JSON.stringify([ownerId, accountId]);
       if (refreshing.has(key)) return refreshing.get(key);
       const task = (async () => {
         let token; try { token = JSON.parse(store.credentials.get(ownerId, accountId, 'oauth')); } catch { fail('AUTH_REQUIRED'); }
         if (token.expiresAt <= clock() + 60000) {
-          token = await exchange(account.provider, { grant_type: 'refresh_token', refresh_token: token.refreshToken }, token);
+          token = await exchange(account.provider, { grant_type: 'refresh_token', refresh_token: token.refreshToken }, token, lease.signal);
+          lease.check();
           store.credentials.set(ownerId, accountId, 'oauth', JSON.stringify(token));
         }
         return { type: 'OAuth2', user: account.address, accessToken: token.accessToken };
       })().finally(() => refreshing.delete(key));
       refreshing.set(key, task); return task;
     },
+  };
+  return {
+    resolve: api.resolve,
+    async start(ownerId, accountId) { return lifecycle.run(ownerId, accountId, () => api.start(ownerId, accountId)); },
+    async complete(ownerId, body) {
+      const identity = api.resolve(body.state); if (identity.ownerId !== ownerId) fail('UNAUTHORIZED');
+      return lifecycle.run(ownerId, identity.accountId, lease => api.complete(ownerId, body, lease));
+    },
+    async auth(ownerId, accountId) { return lifecycle.run(ownerId, accountId, lease => api.auth(ownerId, accountId, lease)); },
   };
 }

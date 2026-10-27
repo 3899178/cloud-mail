@@ -24,41 +24,51 @@ export function mountMailRoutes(app, { store, service, callbackGatewayOwner = 'o
   });
   app.put('/v1/accounts/:id/credentials', async c => {
     const account = store.accounts.get(owner(c), c.req.param('id')); const value = protocol(account.provider, account.address, json(c));
-    await service.engine.stopAccount(owner(c), account.id); await service.actions.stopAccount(owner(c), account.id); await service.registry.invalidate(owner(c), account.id); store.credentials.set(owner(c), account.id, 'protocol', JSON.stringify(value));
-    return c.json({ account: store.accounts.setStatus(owner(c), account.id, 'pending') });
+    return service.lifecycle.transition(owner(c), account.id, { commit: async () => {
+      await service.registry.invalidate(owner(c), account.id); store.credentials.set(owner(c), account.id, 'protocol', JSON.stringify(value));
+      return c.json({ account: store.accounts.setStatus(owner(c), account.id, 'pending') });
+    } });
   });
   app.post('/v1/accounts/:id/connect', async c => c.json({ account: await service.engine.syncAccount({ ownerId: owner(c), accountId: c.req.param('id'), signal: c.req.raw.signal }) }));
   app.post('/v1/accounts/:id/pause', async c => {
-    const account = store.accounts.setStatus(owner(c), c.req.param('id'), 'paused');
-    await service.engine.stopAccount(owner(c), account.id);
-    await service.actions.stopAccount(owner(c), account.id);
-    await service.registry.invalidate(owner(c), account.id); return c.json({ account });
+    return service.lifecycle.transition(owner(c), c.req.param('id'), {
+      begin: () => store.accounts.setStatus(owner(c), c.req.param('id'), 'paused'),
+      commit: async account => { await service.registry.invalidate(owner(c), account.id); return c.json({ account }); },
+    });
   });
   app.post('/v1/accounts/:id/resume', async c => {
-    store.accounts.setStatus(owner(c), c.req.param('id'), 'pending');
+    await service.lifecycle.transition(owner(c), c.req.param('id'), { commit: () => store.accounts.setStatus(owner(c), c.req.param('id'), 'pending') });
     return c.json({ account: await service.engine.syncAccount({ ownerId: owner(c), accountId: c.req.param('id'), signal: c.req.raw.signal }) });
   });
   app.delete('/v1/accounts/:id', async c => {
-    store.accounts.get(owner(c), c.req.param('id')); await service.engine.stopAccount(owner(c), c.req.param('id')); await service.actions.stopAccount(owner(c), c.req.param('id')); await service.registry.invalidate(owner(c), c.req.param('id'));
-    store.accounts.remove(owner(c), c.req.param('id')); return c.json({ removed: true });
+    return service.lifecycle.transition(owner(c), c.req.param('id'), { commit: async () => {
+      await service.registry.invalidate(owner(c), c.req.param('id'));
+      store.accounts.remove(owner(c), c.req.param('id')); return c.json({ removed: true });
+    } });
   });
   app.post('/v1/accounts/:id/oauth/start', async c => {
-    const account = store.accounts.get(owner(c), c.req.param('id')); const result = await service.oauth.start(owner(c), account.id);
-    store.credentials.set(owner(c), account.id, 'protocol', JSON.stringify({ authType: 'oauth', config: mailConfig(account.provider) })); return c.json(result);
+    return service.lifecycle.run(owner(c), c.req.param('id'), async lease => {
+      const account = store.accounts.get(owner(c), c.req.param('id')); const result = await service.oauth.start(owner(c), account.id); lease.check();
+      store.credentials.set(owner(c), account.id, 'protocol', JSON.stringify({ authType: 'oauth', config: mailConfig(account.provider) })); return c.json(result);
+    });
   });
   app.post('/v1/oauth/resolve', c => {
     if (owner(c) !== callbackGatewayOwner) fail('UNAUTHORIZED'); return c.json(service.oauth.resolve(json(c).state));
   });
   app.post('/v1/oauth/complete', async c => {
-    const { accountId } = await service.oauth.complete(owner(c), json(c)); await service.registry.invalidate(owner(c), accountId);
-    store.accounts.setStatus(owner(c), accountId, 'pending');
-    return c.json({ account: await service.engine.syncAccount({ ownerId: owner(c), accountId, signal: c.req.raw.signal }) });
+    const body = json(c); const identity = service.oauth.resolve(body.state); if (identity.ownerId !== owner(c)) fail('UNAUTHORIZED');
+    return service.lifecycle.run(owner(c), identity.accountId, async lease => {
+      const { accountId } = await service.oauth.complete(owner(c), body); lease.check(); await service.registry.invalidate(owner(c), accountId); lease.check();
+      store.accounts.setStatus(owner(c), accountId, 'pending');
+      return c.json({ account: await service.engine.syncAccount({ ownerId: owner(c), accountId, signal: c.req.raw.signal }) });
+    });
   });
   app.get('/v1/messages/:ref/attachments/:id', async c => {
     const message = store.messages.get(owner(c), c.req.param('ref')); const a = message.attachments.find(a => a.id === c.req.param('id')); if (!a) fail('NOT_FOUND');
-    const bytes = await store.attachments.read(owner(c), message.ref, a.id);
-    c.header('Content-Type', 'application/octet-stream'); c.header('X-Content-Type-Options', 'nosniff');
-    c.header('Content-Disposition', `attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(a.filename).replace(/['()*]/g, ch => '%' + ch.charCodeAt(0).toString(16))}`); return c.body(bytes);
+    return service.downloads.response({ ownerId: owner(c), ref: message.ref, attachment: a, signal: c.req.raw.signal, headers: {
+      'Content-Type': 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store',
+      'Content-Disposition': `attachment; filename="attachment"; filename*=UTF-8''${encodeURIComponent(a.filename).replace(/['()*]/g, ch => '%' + ch.charCodeAt(0).toString(16))}`,
+    } });
   });
   app.post('/v1/messages/:ref/read', async c => {
     const ref = c.req.param('ref'); const { unread } = json(c); if (typeof unread !== 'boolean') fail('INVALID_INPUT');

@@ -55,3 +55,15 @@ test('wire adapters feed durable synchronization and uncertain-send ledger end t
   assert.equal(operation.state, 'uncertain'); assert.equal(operation.errorCode, 'SEND_UNCERTAIN'); assert.equal(smtp.state.received.length, 1);
   await engine.syncAccount({ ownerId: owner, accountId: account.id }); assert.equal(smtp.state.received.length, 1);
 });
+test('STARTTLS upgrades before AUTH, verifies original hostname and refuses missing/refused TLS', async t => {
+  const module = await import('./fixtures.mjs'); assert.equal(typeof module.starttlsFixture, 'function', 'real STARTTLS fixture exists');
+  const imap = await imapFixture(t); const { createImapSession } = await import('../../src/providers/imap.mjs');
+  for (const mode of ['upgrade', 'hostname-mismatch', 'withheld', 'refused']) await t.test(mode, async t => {
+    const smtp = await module.starttlsFixture(t, { advertise: mode !== 'withheld', refuse: mode === 'refused' || mode === 'withheld' });
+    const session = await createImapSession({ account: {}, config: { imap: { host: 'imap.fixture.test', port: imap.port, secure: true }, smtp: { host: 'smtp.fixture.test', port: smtp.port, secure: false, requireTLS: true } }, auth: async () => ({ user: 'fixture@example.test', pass: 'fixture-only' }), tlsOptions: { ca: imap.ca }, endpointResolver: async endpoint => ({ host: '127.0.0.1', port: endpoint.port, servername: endpoint.port === smtp.port && mode === 'hostname-mismatch' ? 'wrong-original-host.test' : 'fixture.test' }) }); t.after(() => session.close());
+    const send = session.send({ from: 'fixture@example.test', to: ['target@example.test'], text: 'TLS required' });
+    if (mode === 'upgrade') { await send; assert.equal(smtp.state.received.length, 1); assert.equal(smtp.state.tlsAuth, 1); }
+    else { await assert.rejects(send, mode === 'hostname-mismatch' ? /hostname|Host|altnames|certificate/i : undefined); assert.equal(smtp.state.received.length, 0); assert.equal(smtp.state.tlsAuth, 0); }
+    assert.equal(smtp.state.plaintextAuth, 0); assert.equal(smtp.state.starttls, 1);
+  });
+});

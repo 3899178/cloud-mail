@@ -60,22 +60,24 @@ export function createAttachments({ dataDir, run, all, get, messageRow }) {
       messageRow(who, ref);
       return all('SELECT * FROM attachments WHERE owner_id=? AND ref=? ORDER BY id', who, ref).map(dto);
     },
-    stream(who, ref, id) {
+    stream(who, ref, id, { signal } = {}) {
       const message = messageRow(who, ref); identifier(id);
       const row = get('SELECT * FROM attachments WHERE owner_id=? AND ref=? AND id=?', who, ref, id); if (!row) fail('NOT_FOUND');
       return Readable.from((async function* () {
         const dir = directory(who, message.account_id); if (!dir) fail('NOT_FOUND');
         const path = join(dir, id); let handle;
         try {
+          signal?.throwIfAborted();
           if (lstatSync(path).isSymbolicLink()) fail('UNSAFE_PATH');
           handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
           const stat = await handle.stat(); if (!stat.isFile() || stat.nlink !== 1 || stat.size !== row.size || stat.size > MAX_ATTACHMENT) fail('UNSAFE_PATH');
           const digest = createHash('sha256');
-          for (let offset = 0; offset < row.size;) { const chunk = Buffer.alloc(Math.min(65536, row.size - offset)); const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset); if (!bytesRead) fail('ATTACHMENT_CORRUPT'); digest.update(chunk.subarray(0, bytesRead)); offset += bytesRead; }
+          for (let offset = 0; offset < row.size;) { signal?.throwIfAborted(); const chunk = Buffer.alloc(Math.min(65536, row.size - offset)); const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset); if (!bytesRead) fail('ATTACHMENT_CORRUPT'); digest.update(chunk.subarray(0, bytesRead)); offset += bytesRead; }
           if (digest.digest('hex') !== row.sha256) fail('ATTACHMENT_CORRUPT');
-          for (let offset = 0; offset < row.size;) { const chunk = Buffer.alloc(Math.min(65536, row.size - offset)); const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset); if (!bytesRead) fail('ATTACHMENT_CORRUPT'); offset += bytesRead; yield chunk.subarray(0, bytesRead); }
-        } finally { await handle?.close(); }
-      })());
+          for (let offset = 0; offset < row.size;) { signal?.throwIfAborted(); const chunk = Buffer.alloc(Math.min(65536, row.size - offset)); const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset); if (!bytesRead) fail('ATTACHMENT_CORRUPT'); offset += bytesRead; yield chunk.subarray(0, bytesRead); }
+        } catch (error) { if (error.code === 'ENOENT') fail('NOT_FOUND'); if (error.code === 'ELOOP') fail('UNSAFE_PATH'); throw error; }
+        finally { await handle?.close(); }
+      })(), { objectMode: false, highWaterMark: 65536 });
     },
     async put(who, ref, { filename, contentType, chunks }) {
       const message = messageRow(who, ref); text(filename, 1024); text(contentType, 128);

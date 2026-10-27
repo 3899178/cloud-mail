@@ -4,10 +4,14 @@ import { createProviderRegistry } from '../providers/registry.mjs';
 import { createSyncEngine } from './engine.mjs';
 import { createScheduler } from './scheduler.mjs';
 import { createActions } from '../send/actions.mjs';
+import { createAccountLifecycle } from '../core/lifecycle.mjs';
+import { createDownloads } from '../routes/downloads.mjs';
 export function createMailService({ store, clock = Date.now, clients, registry: suppliedRegistry, adapters, limits = createWorkLimits() }) {
-  const oauth = createOAuth({ store, clock, clients }); let scheduler;
+  const lifecycle = createAccountLifecycle({ store });
+  const oauth = createOAuth({ store, clock, clients, lifecycle }); let scheduler;
   const registry = suppliedRegistry || createProviderRegistry({ store, oauth, adapters, onChange: pair => scheduler?.wake(pair) });
-  const engine = createSyncEngine({ store, registry, limits }); const actions = createActions({ store, registry, limits });
+  const engine = createSyncEngine({ store, registry, limits, lifecycle }); const actions = createActions({ store, registry, limits, lifecycle });
+  const downloads = createDownloads({ store, lifecycle });
   scheduler = createScheduler({ store, engine, clock });
-  return { oauth, registry, engine, actions, scheduler, limits, start() { scheduler.start(); }, async close() { await actions.close(); await scheduler.close(); await registry.close?.(); } };
+  return { oauth, registry, engine, actions, scheduler, limits, lifecycle, downloads, start() { scheduler.start(); }, async close() { await lifecycle.close(); await actions.close(); await scheduler.close(); await registry.close?.(); } };
 }

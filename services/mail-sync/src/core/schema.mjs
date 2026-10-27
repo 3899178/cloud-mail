@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS source_catalog (
   owner_id TEXT NOT NULL, account_id TEXT NOT NULL, location TEXT NOT NULL, value TEXT NOT NULL,
   PRIMARY KEY(owner_id,account_id,location), FOREIGN KEY(owner_id,account_id) REFERENCES accounts(owner_id,id) ON DELETE CASCADE
 ) STRICT;
+CREATE TABLE IF NOT EXISTS hydration_journal (
+  owner_id TEXT NOT NULL, account_id TEXT NOT NULL, source_id TEXT NOT NULL, value TEXT NOT NULL,
+  PRIMARY KEY(owner_id,account_id,source_id), FOREIGN KEY(owner_id,account_id) REFERENCES accounts(owner_id,id) ON DELETE CASCADE
+) STRICT;
 CREATE TABLE IF NOT EXISTS message_ready (
   owner_id TEXT NOT NULL, ref TEXT NOT NULL, PRIMARY KEY(owner_id,ref), FOREIGN KEY(owner_id,ref) REFERENCES messages(owner_id,ref) ON DELETE CASCADE
 ) STRICT;
