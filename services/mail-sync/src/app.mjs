@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { MailError, fail, verifyGatewayAssertion } from '../../../shared/unified-mail/index.mjs';
 import { createWorkLimits } from './core/limits.mjs';
+import { createMailService } from './sync/service.mjs';
+import { mountMailRoutes } from './routes/mail.mjs';
 
-const statuses = { UNAUTHORIZED: 401, NOT_FOUND: 404, CONFLICT: 409, INVALID_TRANSITION: 409, BUSY: 503, PAYLOAD_TOO_LARGE: 413, INVALID_REF: 400, INVALID_CURSOR: 400, INVALID_INPUT: 400 };
+const statuses = { UNAUTHORIZED: 401, NOT_FOUND: 404, CONFLICT: 409, INVALID_TRANSITION: 409, BUSY: 503, PAYLOAD_TOO_LARGE: 413, INVALID_REF: 400, INVALID_CURSOR: 400, INVALID_INPUT: 400, AUTH_REQUIRED: 401, PROVIDER_UNAVAILABLE: 503, SYNC_FAILED: 502, RATE_LIMITED: 429, RESYNC_REQUIRED: 409, INCOMPLETE_SWEEP: 409 };
 async function boundedBody(request) {
   if (!request.body) return new Uint8Array();
   const reader = request.body.getReader(); const chunks = []; let length = 0;
@@ -18,9 +20,10 @@ async function boundedBody(request) {
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return bytes;
 }
-export function createSyncApp({ store, gatewayKey, clock = Date.now }) {
+export function createSyncApp({ store, gatewayKey, clock = Date.now, registry, clients, adapters }) {
   if (!(gatewayKey instanceof Uint8Array) || gatewayKey.byteLength !== 32) fail('INVALID_KEY');
   const key = new Uint8Array(gatewayKey); const app = new Hono(); const work = createWorkLimits();
+  const service = createMailService({ store, clock, registry, clients, adapters, limits: work }); app.services = service;
   app.onError((error, c) => {
     const code = error instanceof MailError && statuses[error.code] ? error.code : 'INTERNAL_ERROR';
     return c.json({ error: { code } }, statuses[code] ?? 500);
@@ -34,6 +37,7 @@ export function createSyncApp({ store, gatewayKey, clock = Date.now }) {
     const url = new URL(c.req.url);
     const claims = await verifyGatewayAssertion({ key, token, method: c.req.method, path: url.pathname + url.search, body, now: clock(), consumeNonce: (ownerId, nonce, exp) => store.assertions.consume(ownerId, nonce, exp) });
     c.set('ownerId', claims.ownerId);
+    c.set('body', body);
     await next();
   });
   app.get('/v1/accounts', c => c.json({ accounts: store.accounts.list(c.get('ownerId')) }));
@@ -45,5 +49,6 @@ export function createSyncApp({ store, gatewayKey, clock = Date.now }) {
   app.get('/v1/messages/:ref', c => c.json({ message: store.messages.get(c.get('ownerId'), c.req.param('ref')) }));
   app.get('/v1/operations/:id', c => c.json({ operation: store.operations.get(c.get('ownerId'), c.req.param('id')) }));
   app.get('/v1/devices', c => c.json({ devices: store.devices.list(c.get('ownerId')) }));
+  mountMailRoutes(app, { store, service });
   return app;
 }

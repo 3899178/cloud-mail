@@ -11,5 +11,5 @@ export function choice(value, allowed) { if (!allowed.includes(value)) fail('INV
 // Never persist a provider exception/message in an error DTO.
 export function errorCode(value) {
   if (value == null) return null;
-  return choice(value, ['AUTH_REQUIRED', 'PROVIDER_TIMEOUT', 'PROVIDER_UNAVAILABLE', 'RATE_LIMITED', 'STORAGE_FULL', 'SYNC_FAILED', 'SEND_UNCERTAIN']);
+  return choice(value, ['AUTH_REQUIRED', 'PROVIDER_TIMEOUT', 'PROVIDER_UNAVAILABLE', 'RATE_LIMITED', 'STORAGE_FULL', 'SYNC_FAILED', 'SEND_UNCERTAIN', 'RESYNC_REQUIRED', 'CAPACITY_EXCEEDED']);
 }

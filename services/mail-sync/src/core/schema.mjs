@@ -42,5 +42,24 @@ CREATE TABLE IF NOT EXISTS attachments (
   PRIMARY KEY(owner_id,ref,id),
   FOREIGN KEY(owner_id,ref) REFERENCES messages(owner_id,ref) ON DELETE CASCADE
 ) STRICT;
+CREATE TABLE IF NOT EXISTS source_catalog (
+  owner_id TEXT NOT NULL, account_id TEXT NOT NULL, location TEXT NOT NULL, value TEXT NOT NULL,
+  PRIMARY KEY(owner_id,account_id,location), FOREIGN KEY(owner_id,account_id) REFERENCES accounts(owner_id,id) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE IF NOT EXISTS message_ready (
+  owner_id TEXT NOT NULL, ref TEXT NOT NULL, PRIMARY KEY(owner_id,ref), FOREIGN KEY(owner_id,ref) REFERENCES messages(owner_id,ref) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE IF NOT EXISTS completed_sweeps (
+  owner_id TEXT NOT NULL, account_id TEXT NOT NULL, id TEXT NOT NULL, targets TEXT NOT NULL,
+  PRIMARY KEY(owner_id,account_id,id), FOREIGN KEY(owner_id,account_id) REFERENCES accounts(owner_id,id) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE IF NOT EXISTS oauth_states (
+  state_hash TEXT PRIMARY KEY, owner_id TEXT NOT NULL, account_id TEXT NOT NULL, expires_at INTEGER NOT NULL, envelope TEXT NOT NULL,
+  FOREIGN KEY(owner_id,account_id) REFERENCES accounts(owner_id,id) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE IF NOT EXISTS sync_baselines (
+  owner_id TEXT NOT NULL, account_id TEXT NOT NULL, baseline_at INTEGER NOT NULL,
+  PRIMARY KEY(owner_id,account_id), FOREIGN KEY(owner_id,account_id) REFERENCES accounts(owner_id,id) ON DELETE CASCADE
+) STRICT;
 PRAGMA user_version=1;
 `;

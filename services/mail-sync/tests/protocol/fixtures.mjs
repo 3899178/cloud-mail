@@ -1,0 +1,92 @@
+import { createServer } from 'node:tls';
+import { generate } from 'selfsigned';
+
+let certificate;
+async function tlsFixture(t, handler) {
+  certificate ||= generate([{ name: 'commonName', value: 'fixture.test' }], { keyType: 'ec', curve: 'P-256', algorithm: 'sha256', extensions: [{ name: 'basicConstraints', cA: true }, { name: 'subjectAltName', altNames: [{ type: 2, value: 'fixture.test' }] }] });
+  const pems = await certificate; const sockets = new Set();
+  const server = createServer({ key: pems.private, cert: pems.cert }, socket => { sockets.add(socket); socket.on('error', () => {}); socket.on('close', () => sockets.delete(socket)); handler(socket); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
+  return { port: server.address().port, ca: pems.cert };
+}
+const quote = value => JSON.stringify(String(value));
+export const wireMime = (id, text = 'Original body') => Buffer.from(`Message-ID: <${id}@example.test>\r\nFrom: sender@example.test\r\nTo: user@example.test\r\nSubject: ${id}\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="wire"\r\n\r\n--wire\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}\r\n--wire\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="test.bin"\r\nContent-Transfer-Encoding: base64\r\n\r\nAAEC/w==\r\n--wire--\r\n`);
+export async function imapFixture(t) {
+  const state = { validity: '100', authFailure: false, folders: new Map([['INBOX', []], ['Archive', []], ['Rules', []], ['Junk', []], ['Trash', []], ['Sent', []], ['Drafts', []]]), commands: [], connections: 0 };
+  const endpoint = await tlsFixture(t, socket => {
+    state.connections++; let buffer = ''; let selected = 'INBOX';
+    socket.write('* OK fixture ready\r\n');
+    socket.on('data', data => {
+      buffer += data.toString();
+      while (buffer.includes('\r\n')) {
+        const end = buffer.indexOf('\r\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+        state.commands.push(line.replace(/LOGIN .*/, 'LOGIN [redacted]'));
+        const [tag, rawCommand] = line.split(' '); const command = rawCommand?.toUpperCase();
+        const ok = () => socket.write(`${tag} OK completed\r\n`);
+        if (command === 'CAPABILITY') { socket.write('* CAPABILITY IMAP4rev1 UIDPLUS MOVE\r\n'); ok(); }
+        else if (command === 'LOGIN') socket.write(`${tag} ${state.authFailure ? 'NO [AUTHENTICATIONFAILED] rejected' : 'OK authenticated'}\r\n`);
+        else if (command === 'LIST' || command === 'LSUB') {
+          if (/LIST "" ""$/.test(line)) { socket.write('* LIST (\\Noselect) "/" ""\r\n'); ok(); continue; }
+          for (const folder of state.folders.keys()) {
+            const special = ({ Archive: '\\Archive', Junk: '\\Junk', Trash: '\\Trash', Sent: '\\Sent', Drafts: '\\Drafts' })[folder] || '';
+            socket.write(`* ${command} (${special}) "/" ${quote(folder)}\r\n`);
+          }
+          ok();
+        } else if (command === 'SELECT' || command === 'EXAMINE') {
+          const match = line.match(/(?:SELECT|EXAMINE) ("(?:[^"\\]|\\.)*"|[^ ]+)/i); selected = match[1].startsWith('"') ? JSON.parse(match[1]) : match[1];
+          const messages = state.folders.get(selected) || [];
+          socket.write(`* FLAGS (\\Seen \\Draft)\r\n* ${messages.length} EXISTS\r\n* OK [UIDVALIDITY ${state.validity}] validity\r\n* OK [UIDNEXT ${Math.max(0, ...messages.map(m => Number(m.uid))) + 1}] next\r\n${tag} OK [READ-WRITE] selected\r\n`);
+        } else if (command === 'FETCH' || (command === 'UID' && / UID FETCH |^\S+ UID FETCH /i.test(line))) {
+          const isUid = command === 'UID'; const range = line.split(' ')[isUid ? 3 : 2];
+          const messages = state.folders.get(selected) || [];
+          for (const [index, m] of messages.entries()) {
+            if (!range.includes(':') && Number(range) !== (isUid ? Number(m.uid) : index + 1)) continue;
+            const flags = m.unread ? '' : '\\Seen';
+            const parts = [`UID ${m.uid}`, `FLAGS (${flags})`, `INTERNALDATE "27-Oct-2026 12:00:00 +0000"`, `RFC822.SIZE ${m.raw.length}`, `ENVELOPE (NIL ${quote(m.subject)} ((NIL NIL "sender" "example.test")) NIL NIL NIL NIL NIL NIL ${quote(`<${m.key}@example.test>`)})`];
+            const partial = line.match(/BODY\.PEEK\[\](?:<(\d+)\.(\d+)>)?/i);
+            if (partial) {
+              const start = Number(partial[1] || 0); const chunk = m.raw.subarray(start, start + Number(partial[2] || m.raw.length));
+              socket.write(`* ${index + 1} FETCH (${parts.join(' ')} BODY[]<${start}> {${chunk.length}}\r\n`); socket.write(chunk); socket.write(')\r\n');
+            } else socket.write(`* ${index + 1} FETCH (${parts.join(' ')})\r\n`);
+          }
+          ok();
+        } else if (command === 'UID' && / STORE /i.test(line)) {
+          const uid = Number(line.split(' ')[3]); const unread = /-FLAGS/.test(line); const messages = state.folders.get(selected) || [];
+          const m = messages.find(m => Number(m.uid) === uid); if (m) m.unread = unread; ok();
+        } else if (command === 'UID' && / MOVE /i.test(line)) {
+          const uid = Number(line.split(' ')[3]); const raw = line.split(' ').slice(4).join(' '); const destination = raw.startsWith('"') ? JSON.parse(raw) : raw;
+          const messages = state.folders.get(selected) || []; const index = messages.findIndex(m => Number(m.uid) === uid);
+          if (!state.folders.has(destination)) throw new Error(`Unknown fixture mailbox: ${line}`);
+          if (index >= 0) { const [m] = messages.splice(index, 1); state.folders.get(destination).push(m); socket.write(`* ${index + 1} EXPUNGE\r\n`); } ok();
+        } else if (command === 'LOGOUT') { socket.end(`* BYE closing\r\n${tag} OK logout\r\n`); }
+        else if (['NOOP', 'CLOSE', 'ID', 'NAMESPACE'].includes(command)) ok();
+        else socket.write(`${tag} BAD unsupported\r\n`);
+      }
+    });
+  });
+  return { ...endpoint, state };
+}
+export async function smtpFixture(t) {
+  const state = { uncertain: false, received: [], authFailure: false };
+  const endpoint = await tlsFixture(t, socket => {
+    let buffer = ''; let dataMode = false; let message = [];
+    socket.write('220 fixture ESMTP\r\n');
+    socket.on('data', data => {
+      buffer += data.toString();
+      while (buffer.includes('\r\n')) {
+        const end = buffer.indexOf('\r\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+        if (dataMode) {
+          if (line === '.') { state.received.push(message.join('\r\n')); message = []; dataMode = false; if (state.uncertain) socket.destroy(); else socket.write('250 accepted\r\n'); }
+          else message.push(line.startsWith('..') ? line.slice(1) : line);
+        } else if (/^EHLO /.test(line)) socket.write('250-fixture\r\n250 AUTH PLAIN LOGIN\r\n');
+        else if (/^AUTH /.test(line)) socket.write(state.authFailure ? '535 auth rejected\r\n' : '235 authenticated\r\n');
+        else if (/^(MAIL FROM|RCPT TO)/.test(line)) socket.write('250 ok\r\n');
+        else if (line === 'DATA') { dataMode = true; socket.write('354 send data\r\n'); }
+        else if (line === 'QUIT') socket.end('221 goodbye\r\n');
+        else socket.write('250 ok\r\n');
+      }
+    });
+  });
+  return { ...endpoint, state };
+}

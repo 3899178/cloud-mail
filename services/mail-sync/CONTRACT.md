@@ -4,7 +4,7 @@ This service adds isolated external-mail storage. It does not change Cloud Mail'
 
 ## Runtime and configuration
 
-Node **24.18.0+**, built-in `node:sqlite`, Hono 4.12.16 and the locked Node server adapter. Run `npm ci` and `npm test` inside `services/mail-sync`. `npm start` binds **127.0.0.1:3211** by default. `PORT` changes the port. `MAIL_SYNC_DATA_DIR` defaults to `.data` and contains `mail.sqlite` and `attachments/`.
+Node **24.18.0+**, built-in `node:sqlite`, Hono 4.13.14 and `@hono/node-server` 1.19.17. Run `npm ci` and `npm test` inside `services/mail-sync`. `npm start` binds **127.0.0.1:3211** by default. `PORT` changes the port. `MAIL_SYNC_DATA_DIR` defaults to `.data` and contains `mail.sqlite` and `attachments/`.
 
 `MAIL_SYNC_MASTER_KEY` and `MAIL_SYNC_GATEWAY_KEY` are separate 32-byte keys encoded as 64 hex characters, supplied through private deployment configuration. No default keys exist. Never publish these variables, provider credentials, device tokens, plaintext exports or database backups. Only the entry point reads environment configuration. SIGINT/SIGTERM close the HTTP listener and SQLite store. Deployment must supply the approved aggregate 320 MiB limit; Task 1 does **not** validate 50 live connections or the final memory envelope.
 
@@ -90,6 +90,113 @@ These internal upstream routes are **not** the public Worker `/api/external`, `/
 All HTTP errors: `{error:{code}}`, never exception stacks or raw provider errors. `UNAUTHORIZED`=401; `NOT_FOUND`=404; `INVALID_INPUT|INVALID_REF|INVALID_CURSOR`=400; `CONFLICT|INVALID_TRANSITION`=409; `PAYLOAD_TOO_LARGE`=413; `BUSY`=503; unexpected internal errors=`INTERNAL_ERROR`=500. No request/credential logging middleware is installed.
 
 `createWorkLimits({maxQueued=50}={}) -> {parse,reconnect}` from `src/core/limits.mjs`; each accepts `asyncTask -> Promise<result>`. Parsing concurrency is **1**, reconnect concurrency **2**. Each queue admits at most maxQueued waiting tasks (0..1000); overflow rejects `BUSY`, and errors release capacity. Adapters must share one limits instance across all their accounts; constructing a queue per account defeats the aggregate concurrency budget.
+
+## Task 2 provider/synchronization additions
+
+The original foundation API above remains compatible. This section describes implemented internal service behavior; it does **not** establish live support for any named provider. All real mailbox authorization, Google/Microsoft application registration/consent and provider compatibility tests remain pending. No Worker/UI/Android/Proton implementation is included here.
+
+### Service and provider exports
+
+- `createMailService({store,clock=Date.now,clients,registry?,adapters?,limits?})` in `src/sync/service.mjs` returns `{oauth,registry,engine,actions,scheduler,limits,start(),close()}`. One aggregate limits object serves all accounts. `start()` starts scheduling; `close()` aborts sends, stops scheduling and closes pooled transports. `createSyncApp` now accepts the same `clients`, `registry`, `adapters` options and exposes this service as `app.services`. Creating an app alone does not start a timer. The production entry starts it and calls `operations.recover()` once before listening for work. Run only one process against a database; there is no distributed scheduler/operation lease.
+- `createSyncEngine({store,registry,limits?})` in `src/sync/engine.mjs` returns `syncAccount({ownerId,accountId,signal?}) -> Promise<Account>` and `stopAccount(ownerId,accountId)`. Same-account overlapping sync calls share a promise. `stopAccount` aborts/waits for that work. Paused accounts remain paused; auth failure becomes `needs-auth/AUTH_REQUIRED`. Capacity, disk exhaustion and ambiguous resynchronization become `paused/CAPACITY_EXCEEDED|STORAGE_FULL|RESYNC_REQUIRED`; other failures become `error` with safe codes. `active` requires an observed authenticated provider connection and a successful complete sweep. Raw errors are never returned or logged.
+- `createProviderRegistry({store,oauth,adapters={},onChange?,sessionFactory?})` in `src/providers/registry.mjs` returns `open({ownerId,account,signal?})`, `invalidate(ownerId,accountId)`, `close()`. `open` gives an exclusive per-account lease; `lease.close()` releases it and selects INBOX for idle watching. Aborting the lease closes its pooled transport. Physical sessions reconnect if unusable. `adapters[provider]({ownerId,account,signal})` supplies an injected provider implementation, including the future Proton adapter. No Proton adapter or alternate Proton scheduler is supplied in Task 2.
+- `mailConfig(provider,manual?)` and `createImapSession({account,config,auth,signal?,endpointResolver?,tlsOptions?,onChange?})` in `src/providers/imap.mjs`. Presets: Gmail (`imap.gmail.com:993`, `smtp.gmail.com:465`), Outlook (`outlook.office365.com:993`, `smtp-mail.outlook.com:587 STARTTLS`), QQ (`imap.qq.com:993`, `smtp.qq.com:465`), iCloud (`imap.mail.me.com:993`, `smtp.mail.me.com:587 STARTTLS`), 163/126/yeah (matching `imap.*:993`, `smtp.*:465`). Generic IMAP and school accounts require explicit hosts/ports; school server addresses are not guessed. Manual settings are `{imap:{host,port,secure:true},smtp:{host,port,secure:true}|{host,port,requireTLS:true}}`. Arbitrary transport/TLS/proxy/log options from HTTP are discarded. An optional `user` supports a provider-specific login name; SMTP currently uses that same login user. Outlook requires OAuth. Gmail permits approved application passwords or OAuth.
+- `resolvePublicEndpoint({host,port},resolver?)` in `src/providers/network.mjs` resolves all answers, rejects nonpublic/special-use IPv4/IPv6 (including mapped addresses), and returns `{host:pinnedIp,port,servername:originalHost}`. IMAP and SMTP connect to that IP with certificate validation of the original hostname, resolving anew on new connections. SMTP STARTTLS is mandatory when implicit TLS is disabled. Dependency injection of resolver/TLS roots is internal test/adapter configuration, never an HTTP field. OAuth endpoints are fixed official HTTPS URLs and redirects are refused.
+- `providerCode(error)` in `src/providers/errors.mjs` maps exceptions to the safe persisted enum; messages/stacks/provider responses are not copied into DTOs.
+
+All physical provider sessions must implement this common protocol:
+
+```js
+{
+  folders: async () => [{ id: 'folder-id', kind: 'inbox' /* normal|archive|rule|spam|trash|drafts|sent|skip */ }],
+  snapshot: async (folderId, { checkpoint, baselineAt, signal } = {}) => ({
+    uidValidity: 'provider-identity-epoch', cursor: 'durable-provider-cursor',
+    messages: [{ id: 'remote-location-id', receivedAt: 0, unread: true,
+      stableId: 'optional-provider-stable-message-id',
+      fingerprint: 'bounded-reconciliation-fingerprint', messageId: '<optional-rfc822-id>' }]
+  }),
+  fetch: async (folderId, metadataWithUidValidity) => readableOriginalMime,
+  validateSnapshot: async (folderId, snapshot) => true, // Must verify complete unchanged inventory.
+  flags: async (location, unread) => { /* throw unless source confirms mutation */ },
+  trash: async location => { /* move into source Trash; throw on failure */ },
+  send: async (message, { signal } = {}) => ({ accepted: true }), // Throw safe-classifiable failure/uncertainty.
+  close: async () => {},
+  usable: () => true, // Optional: reusable authenticated transport is usable.
+  acquire: () => {}, // Optional: suspend idle event scheduling while leased.
+  idle: async () => {} // Optional: select watched folder; physical close occurs on invalidate/shutdown.
+}
+```
+
+`snapshot` is a **complete** normal-folder metadata inventory, not only changed messages. A provider may use its durable event cursor internally but must return a complete reconciled inventory. Task 2 passes the last committed checkpoint and account binding cutoff to `snapshot`; the engine owns checkpoint commits. `validateSnapshot` must not bless a partial/disconnected inventory. The IMAP adapter re-fetches metadata and compares inventory signatures, then the engine rechecks folder membership. Production adapters must not rely on the optional-check omission used by small in-memory algorithm fixtures.
+
+`location = {folder,uidValidity,remoteId,sourceId,fingerprint,stableId?,messageId?,admitted,receivedAt,unread}`. Task 3 should use the Proton stable MessageID as `stableId` and `id`, an adapter identity epoch as `uidValidity`, and the real event token as `cursor`. Never use Proton bridge UID as stable identity. The adapter factory can obtain encrypted credentials from its service-owned store; browser owners or credentials never enter the protocol as trusted identities.
+
+### Binding, reconciliation, resources and limits
+
+The account's server `createdAt` is the binding cutoff. The first **complete** inventory catalogs all normal mail metadata, including excluded history; only messages with provider INTERNALDATE at or after this cutoff get bodies. Inbox, archive/all-mail and normal rule folders are included. Special-use sent/trash/junk/drafts and message draft/Gmail excluded labels are omitted. After a folder baseline exists, a newly observed location is admitted even with an old INTERNALDATE (post-binding APPEND/import). A known post-binding message moved to a new folder retains its admitted identity and original list timestamp. New folders containing unmatched old-date items after the initial baseline, or UID resets with unmatched old-date items, pause with `RESYNC_REQUIRED`: the service cannot safely distinguish old history from a new import that preserved an old date.
+
+Prefer provider `EMAILID`/Gmail `X-GM-MSGID` whenever advertised. Generic IMAP uses persisted UID/UIDVALIDITY/folder locations and one-to-one reconciliation of vanished locations by Message-ID/INTERNALDATE (or envelope/size fallback without Message-ID). Identical deliveries have distinct source IDs; copies where the original still exists retain multiplicity. UUID-like opaque source strings are deterministic hashes of the provider location epoch, not global raw-MIME hashes. A move/reset match preserves the original source reference and attachments despite MIME reserialization. Mixed historical/admitted indistinguishable candidates pause instead of silently choosing. Generic IMAP cannot guarantee identity when a server destroys all identifying metadata or makes a new identical delivery indistinguishable from a move; this is a real protocol limitation and requires live provider review. The service does not claim perfect generic identity recovery.
+
+MIME parsing is globally serial. Raw MIME <=36MiB, decoded attachment <=25MiB, <=100 attachments/message, text/html <=2MiB each, incoming store batch <=100 (engine currently uses one message per batch). Attachments spool original decoded bytes into confined generated stage files and stream into the permanent store in <=64KiB disk chunks; partial stages are removed on errors. The next account scan removes stale generated stages after a process interruption. Forward/reply attachments stream verified original stored bytes rather than loading multiple files into memory. Source deletes target only previously cataloged admitted refs absent after a complete sweep; explicit persisted sweep capabilities bind deletion to owner/account and exact refs. Missing/incomplete sweep markers cannot authorize cleanup. Filesystem cleanup failures retain the durable sweep for retry; no blanket account-message deletion is used.
+
+Metadata FETCH pages contain at most 100 records. Each account/sweep is bounded to 200 folders, 20,000 locations and 8MiB serialized catalog/metadata; exceeding a cap pauses with `CAPACITY_EXCEEDED`, retaining existing content/catalog/checkpoints. At most two sweeps run at once, and no 50-account array of inventories is retained. Metadata bodies are never downloaded for known/excluded history. The 50-live-account, aggregate 320MiB deployment/memory envelope remains unverified and belongs to resource acceptance; these bounds are not a claim of measured production capacity.
+
+`createScheduler({store,engine,clock=Date.now,intervalMs=30000})` in `src/sync/scheduler.mjs` returns `tick()`, `wake({ownerId,accountId})`, `start()`, `close()`. It rotates the first account for fairness, runs at most two accounts concurrently, and excludes paused/pending/needs-auth accounts. One-second dispatch checks make each active/error account due about every 30 seconds; transport/provider timeouts can delay this. IMAP sessions are retained; INBOX is selected on lease release, imapflow auto-IDLE begins after its 15-second inactivity threshold and renews at 25 seconds. INBOX changes wake the shared scheduler with a five-second debounce. Archives/rule folders still use full 30-second polling. Servers without IDLE use library/poll fallback. This is not an assertion of continuous IDLE on every folder.
+
+### Compatible store additions (privileged internals only)
+
+- `messages.ingest(...,{...,advanceCheckpoint=true})`: false ingests a bounded message batch without touching the existing checkpoint. Normal foundation default still atomically ingests and advances its checkpoint. Engine hydration uses false, then atomically commits the completed whole catalog, folder checkpoints and initial-baseline marker together. A failed MIME/attachment scan cannot establish a baseline or advance cursors.
+- `accounts.scheduled() -> [{ownerId,accountId,status}]`: internal cross-owner enumeration for the scheduler, never an HTTP DTO.
+- `sources.catalog(owner,accountId) -> location[]`; `sources.baseline(owner,accountId) -> {baselineAt}|null`; `sources.ready(owner,ref) -> boolean`; `sources.complete(owner,ref)`; `sources.clearContent(owner,ref)` (clears partial permanent attachments before a hydration retry).
+- `sources.commit(owner,accountId,{catalog,checkpoints,expectedFolders}) -> sweepId`: validates complete exact folder coverage and all bounded metadata; atomically replaces catalog, updates flags/folders, commits all checkpoints/baseline and writes exact prior-source deletion candidates. Each checkpoint has `{folder,cursor,uidValidity,baselineAt}`. Call only after all hydration and provider snapshot validation succeeded.
+- `sources.pendingSweeps(owner,accountId) -> sweepId[]`; `sources.prune(owner,accountId,sweepId)` consumes that owner/account-bound persisted completed-sweep capability and deletes only its captured absent source refs/attachments; currently present refs are protected. `sources.update(owner,ref,{unread})` updates a confirmed source flag.
+- `attachments.stage(owner,accountId,chunks) -> Promise<{chunks(),cleanup()}>`: confined, bounded staging; `chunks()` opens a <=64KiB stream. `attachments.cleanupStages(owner,accountId)` removes only verified generated `.stage-<uuid>` regular files in that account directory. `attachments.stream(owner,ref,id) -> Readable` verifies size/SHA256 on the opened confined file before yielding <=64KiB chunks. Internal `removeMessageFiles(owner,ref)` removes that owned message's generated permanent files and attachment metadata.
+- `oauthStates.create(owner,accountId,value,ttlMs=600000) -> randomState`; `resolve(state) -> {ownerId,accountId}`; `consume(owner,state) -> {ownerId,accountId,value}`. Stored state is SHA256-addressed; secret verifier payload uses the same account-bound AES-GCM vault, expires after <=10 minutes and is consumed transactionally once. A new start invalidates previous pending state for that account. Cross-owner consume fails without consuming the rightful state.
+- `operations.recover()` changes interrupted queued/running send/reply/forward operations to `uncertain/SEND_UNCERTAIN` and other interrupted mutations to `failed/SYNC_FAILED`. It never resends. The entry point calls it once on process start.
+
+Safe persisted error codes now additionally admit `RESYNC_REQUIRED` and `CAPACITY_EXCEEDED`. Unknown raw provider failures still become existing safe codes. Additive schema tables are created idempotently alongside schema version 1; existing foundation rows remain intact.
+
+### OAuth ownership and callback contract
+
+`createOAuth({store,clients={},clock=Date.now,fetcher=fetch})` in `src/providers/oauth.mjs` returns `start(ownerId,accountId)`, `resolve(state)`, `complete(ownerId,{state,code})`, `auth(ownerId,accountId)`. `clients.gmail/outlook = {clientId,clientSecret,redirectUri}` must be the operator's own registered applications. Only the production entry reads `MAIL_SYNC_GOOGLE_CLIENT_ID|CLIENT_SECRET|REDIRECT_URI` and `MAIL_SYNC_MICROSOFT_CLIENT_ID|CLIENT_SECRET|REDIRECT_URI`. Redirect URI must be operator-configured HTTPS; it is not accepted from the browser. Official Google/Microsoft authorization-code and refresh endpoints use S256 PKCE, random server-held state, a 15-second timeout and <=32KiB token response. Tokens/refresh rotations are vault-encrypted. Parallel refreshes for the same account coalesce. `complete` stores tokens but does not declare an account active; the account must authenticate and synchronize afterward. OAuth registration, Gmail restricted-scope verification and Microsoft tenant permissions remain operator/live prerequisites.
+
+The future Worker callback may have **no same-browser session cookie**. It must follow this precise server-to-server flow:
+
+1. Normal authenticated/CSRF-protected Worker bind/start requests sign the real authenticated Cloud Mail owner and forward to `/v1/accounts/:id/oauth/start`. Browser receives only the authorization URL and expiry, never the PKCE verifier or any token.
+2. On the configured public callback, Worker validates the expected provider callback shape and forwards `{state}` to `POST /v1/oauth/resolve`, signed with reserved owner **`oauth-callback`**, fresh nonce, exact path/body. That reserved service identity must never be minted from a browser owner/session/user record, and `/resolve` must never be browser-proxied. Only a trusted holder of the gateway key may call it. No HTTP service endpoint is unauthenticated apart from `/health`.
+3. `/resolve` verifies unexpired server-held state and returns `{ownerId,accountId,provider}` **only to the Worker**. Worker checks the callback provider matches the resolved provider, signs the resolved owner from this server response (not a browser `ownerId`), and forwards `{state,code}` to `POST /v1/oauth/complete` with a new assertion. `/complete` independently checks the server-held owner and consumes state once before token exchange. Cookie absence cannot authorize arbitrary account selection. Browser-supplied owner/account values have no authority.
+4. Worker must not log callback codes/state/tokens or leak resolved owner in redirects; use fixed same-site success/failure pages. Do not retry a consumed authorization code or an uncertain send. On authorization denial show a safe error and restart authorization when requested. Expired/used/mismatched state is `UNAUTHORIZED`.
+
+### HTTP additions (all require fresh gateway assertions)
+
+All request JSON is parsed from the exact already-verified bounded body; existing 65,536-byte request limit remains. These are internal upstream `/v1` routes, not new public Worker authentication semantics.
+
+| Method/path | Request | Success |
+| --- | --- | --- |
+| POST `/v1/accounts` | `{provider,address,credentials?}` | 201 `{account}` pending |
+| PUT `/v1/accounts/:id/credentials` | `{authType?:'password'|'oauth',user?,password?,config?}` | `{account}` pending |
+| POST `/v1/accounts/:id/connect` | empty body allowed | `{account}` observed sync status |
+| POST `/v1/accounts/:id/pause` | empty body allowed | `{account}` paused; abort/wait work, close session |
+| POST `/v1/accounts/:id/resume` | empty body allowed | `{account}` observed sync status |
+| DELETE `/v1/accounts/:id` | empty body | `{removed:true}` after owned work/session/files cleanup |
+| POST `/v1/accounts/:id/oauth/start` | empty body allowed | `{authorizationUrl,expiresIn:600}` |
+| POST `/v1/oauth/resolve` | `{state}`; reserved callback service owner only | `{ownerId,accountId,provider}` internal callback identity |
+| POST `/v1/oauth/complete` | `{state,code}`; resolved real owner assertion | `{account}` observed sync status |
+| GET `/v1/messages/:ref/attachments/:id` | empty body | original bytes; octet-stream, nosniff, encoded attachment filename |
+| POST `/v1/messages/:ref/read` | `{unread:boolean}` | `{operation}` actual source result |
+| POST `/v1/messages/:ref/trash` | empty body allowed | `{operation}` actual source result; copy removed after complete reconciliation |
+| POST `/v1/send` | `{accountId,kind:'send'|'reply'|'forward',ref?,message:{to:[],cc?:[],bcc?:[],subject?,text?,html?,attachmentIds?:[]}}` | `{operation}` terminal succeeded/failed/uncertain |
+| GET `/v1/operations` | empty body | `{operations}` last 100, owned |
+
+The account `credentials` object has the same shape as PUT credentials and is write-only. Provider configuration and credential values never appear in returned DTOs. `ownerId` in any browser JSON has no effect. Existing source refs, exact query/body-bound assertions and BINARY cursors are unchanged.
+
+`createActions({store,registry,limits?})` in `src/send/actions.mjs` exposes `execute(...)`, `stopAccount(ownerId,accountId)`, `close()`, and `resume({ownerId,operationId})` (always refuses `INVALID_TRANSITION` after owned lookup; never resends). Execution creates the durable ledger before source work. Sender identity is forced to the owned account address. Reply uses preserved source Message-ID when valid; reply/forward require an owned source ref. Recipients are validated arrays (<=20 each); optional attachment IDs must exist on that same owned source message and are streamed as original bytes. Provider errors after possible SMTP submission become `uncertain/SEND_UNCERTAIN` unless a definitive rejection is known. A source mutation succeeds only after its adapter confirms; flags update locally afterward. Interrupting a possibly submitted send is uncertain.
+
+**Fresh compose attachment gap for Task 4:** Task 2 supports forwarding/replying/sending existing owned source attachments by `attachmentIds`; it does not add a new attachment-upload/staging HTTP route for newly selected local files. The existing Worker upload path has not been changed. Task 4 must inspect that existing path and add a bounded authenticated bridge/staging transport for external fresh-compose attachments; arbitrary URL fetch and huge inline base64 bodies are not permitted. This remains an integration requirement, not a permanent feature exclusion.
+
+HTTP additionally returns safe `AUTH_REQUIRED`=401, `PROVIDER_UNAVAILABLE`=503, `SYNC_FAILED`=502, `RATE_LIMITED`=429, `RESYNC_REQUIRED|INCOMPLETE_SWEEP`=409 when those service operations throw directly; observed sync failures normally return `{account}` with truthful status/errorCode. Do not infer that HTTP 200 means a source operation succeeded: inspect `account.status` or `operation.state`. Never automatically retry `/v1/send` after uncertainty or a lost response.
+
+Protocol references used for presets/OAuth: [Gmail IMAP/SMTP](https://developers.google.com/workspace/gmail/imap/imap-smtp), [Google OAuth web-server flow](https://developers.google.com/identity/protocols/oauth2/web-server), [Microsoft IMAP/SMTP OAuth scopes](https://learn.microsoft.com/en-us/exchange/client-developer/legacy-protocols/how-to-authenticate-an-imap-pop-smtp-application-by-using-oauth/), [Microsoft authorization-code flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow), [Outlook settings](https://support.microsoft.com/en-us/outlook/pop-imap-and-smtp-settings-for-outlook-com), [iCloud server settings](https://support.apple.com/en-ie/102525), [NetEase client help](https://help.mail.yeah.net/faqDetail.do?code=d7a5dc8471cd0c0e8b4b8f4f8e49998b374173cfe9171305fa1ce630d7f67ac25c12dcb3d46222b6). QQ presets still require live authorization and compatibility validation; school remains explicitly manual.
 
 ## Local Worker test safety
 

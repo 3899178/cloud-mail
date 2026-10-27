@@ -15,6 +15,13 @@ const port = Number(process.env.PORT || 3211);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
 const store = openStore({ dbPath: resolve(dataDir, 'mail.sqlite'), dataDir: resolve(dataDir, 'attachments'), masterKey });
 masterKey.fill(0);
-const app = createSyncApp({ store, gatewayKey }); gatewayKey.fill(0);
+const clients = {};
+for (const [provider, prefix] of [['gmail', 'GOOGLE'], ['outlook', 'MICROSOFT']]) {
+  const clientId = process.env[`MAIL_SYNC_${prefix}_CLIENT_ID`]; const clientSecret = process.env[`MAIL_SYNC_${prefix}_CLIENT_SECRET`]; const redirectUri = process.env[`MAIL_SYNC_${prefix}_REDIRECT_URI`];
+  if (clientId || clientSecret || redirectUri) { if (!clientId || !clientSecret || !redirectUri) throw new Error(`Incomplete ${prefix} OAuth configuration`); clients[provider] = { clientId, clientSecret, redirectUri }; }
+}
+const app = createSyncApp({ store, gatewayKey, clients }); gatewayKey.fill(0);
+store.operations.recover();
 const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port });
-for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { server.close(() => { store.close(); process.exit(0); }); });
+app.services.start();
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { server.close(async () => { await app.services.close(); store.close(); process.exit(0); }); });

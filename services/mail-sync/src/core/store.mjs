@@ -7,6 +7,7 @@ import { createVault } from './crypto.mjs';
 import { schema } from './schema.mjs';
 import { choice, errorCode, integer, text } from './validation.mjs';
 import { createAttachments } from './attachments.mjs';
+import { createReconciliation } from './reconciliation.mjs';
 
 const accountDto = r => ({ id: r.id, provider: r.provider, address: r.address, status: r.status, errorCode: r.error_code, createdAt: r.created_at });
 const messageDto = (r, detail = false) => ({ ref: r.ref, accountId: r.account_id, source: 'external', receivedAt: r.received_at, subject: r.subject, from: r.sender, unread: Boolean(r.unread), folder: r.folder, ...(detail ? { text: r.text_body, html: r.html_body } : {}) });
@@ -55,6 +56,7 @@ export function openStore({ dbPath, dataDir, masterKey, clock = Date.now }) {
     },
     get(who, id) { return accountDto(accountRow(who, id)); },
     list(who) { owner(who); return all('SELECT * FROM accounts WHERE owner_id=? ORDER BY created_at,id', who).map(accountDto); },
+    scheduled() { return all("SELECT owner_id,id,status FROM accounts WHERE status IN ('active','connecting','error') ORDER BY owner_id,id").map(r => ({ ownerId: r.owner_id, accountId: r.id, status: r.status })); },
     setStatus(who, id, status, code = null) {
       accountRow(who, id); choice(status, ['pending', 'connecting', 'active', 'paused', 'needs-auth', 'error']);
       run('UPDATE accounts SET status=?,error_code=? WHERE owner_id=? AND id=?', status, errorCode(code), who, id);
@@ -85,7 +87,7 @@ export function openStore({ dbPath, dataDir, masterKey, clock = Date.now }) {
     },
   };
   const messages = {
-    ingest(who, id, { folder, folderKind = 'normal', checkpoint, messages: incoming }) {
+    ingest(who, id, { folder, folderKind = 'normal', checkpoint, messages: incoming, advanceCheckpoint = true }) {
       accountRow(who, id); text(folder, 1024); choice(folderKind, ['normal', 'inbox', 'archive', 'rule']);
       if (!Array.isArray(incoming) || incoming.length > 100 || !checkpoint || typeof checkpoint !== 'object') fail('INVALID_INPUT');
       const clean = { cursor: text(checkpoint.cursor, 8192, true) };
@@ -101,7 +103,7 @@ export function openStore({ dbPath, dataDir, masterKey, clock = Date.now }) {
           if (typeof m.unread !== 'boolean') fail('INVALID_INPUT');
           inserted += Number(run('INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(owner_id,account_id,source_id) DO NOTHING', who, id, ref, sourceId, m.receivedAt, m.subject ?? '', m.from ?? '', body, html, Number(m.unread), folder).changes);
         }
-        run('INSERT INTO checkpoints VALUES(?,?,?,?) ON CONFLICT(owner_id,account_id,folder) DO UPDATE SET value=excluded.value', who, id, folder, JSON.stringify(clean));
+        if (advanceCheckpoint) run('INSERT INTO checkpoints VALUES(?,?,?,?) ON CONFLICT(owner_id,account_id,folder) DO UPDATE SET value=excluded.value', who, id, folder, JSON.stringify(clean));
         return { inserted, checkpoint: clean };
       });
     },
@@ -122,6 +124,9 @@ export function openStore({ dbPath, dataDir, masterKey, clock = Date.now }) {
     if (!r) fail('NOT_FOUND'); return r;
   };
   const operations = {
+    recover() {
+      run("UPDATE operations SET state=CASE WHEN kind IN ('send','reply','forward') THEN 'uncertain' ELSE 'failed' END,error_code=CASE WHEN kind IN ('send','reply','forward') THEN 'SEND_UNCERTAIN' ELSE 'SYNC_FAILED' END,updated_at=? WHERE state IN ('queued','running')", clock());
+    },
     create(who, { accountId, ref = null, kind }) {
       accountRow(who, accountId); choice(kind, ['mark-read', 'mark-unread', 'delete', 'send', 'reply', 'forward']);
       if (ref !== null && messageRow(who, ref).account_id !== accountId) fail('NOT_FOUND');
@@ -171,5 +176,32 @@ export function openStore({ dbPath, dataDir, masterKey, clock = Date.now }) {
   try { attachments = createAttachments({ dataDir, run, all, get, messageRow }); }
   catch (e) { db.close(); vault.close(); throw e; }
   let closed = false;
-  return { accounts, credentials, messages, checkpoints, operations, devices, assertions, attachments, close() { if (!closed) { db.close(); vault.close(); closed = true; } } };
+  const sources = createReconciliation({ run, all, get, transaction, accountRow, messageRow, attachments });
+  const oauthStates = {
+    create(who, accountId, value, ttlMs = 600000) {
+      accountRow(who, accountId); integer(ttlMs, 1000, 600000);
+      const state = randomBytes(32).toString('base64url'); const expiresAt = clock() + ttlMs;
+      transaction(() => {
+        run('DELETE FROM oauth_states WHERE expires_at<=? OR (owner_id=? AND account_id=?)', clock(), who, accountId);
+        run('INSERT INTO oauth_states VALUES(?,?,?,?,?)', hash(state), who, accountId, expiresAt, vault.seal(who, accountId, 'oauth-state', JSON.stringify(value)));
+      });
+      return state;
+    },
+    resolve(state) {
+      if (typeof state !== 'string' || !/^[\w-]{43}$/.test(state)) fail('UNAUTHORIZED');
+      const row = get('SELECT owner_id,account_id FROM oauth_states WHERE state_hash=? AND expires_at>?', hash(state), clock());
+      if (!row) fail('UNAUTHORIZED');
+      return { ownerId: row.owner_id, accountId: row.account_id };
+    },
+    consume(who, state) {
+      const identity = this.resolve(state); if (identity.ownerId !== who) fail('UNAUTHORIZED');
+      return transaction(() => {
+        const row = get('SELECT envelope FROM oauth_states WHERE state_hash=? AND owner_id=? AND expires_at>?', hash(state), who, clock());
+        if (!row) fail('UNAUTHORIZED');
+        run('DELETE FROM oauth_states WHERE state_hash=? AND owner_id=?', hash(state), who);
+        return { ...identity, value: JSON.parse(vault.open(who, identity.accountId, 'oauth-state', row.envelope)) };
+      });
+    },
+  };
+  return { accounts, credentials, messages, checkpoints, operations, devices, assertions, attachments, sources, oauthStates, close() { if (!closed) { db.close(); vault.close(); closed = true; } } };
 }

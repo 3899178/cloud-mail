@@ -1,5 +1,7 @@
-import { constants, lstatSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
+import { constants, lstatSync, mkdirSync, realpathSync, rmSync, readdirSync } from 'node:fs';
 import { open, unlink } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { Readable } from 'node:stream';
 import { join, resolve, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { fail, identifier } from '../../../../shared/unified-mail/index.mjs';
@@ -32,9 +34,48 @@ export function createAttachments({ dataDir, run, all, get, messageRow }) {
     return current;
   }
   return {
+    cleanupStages(who, accountId) {
+      const dir = directory(who, accountId); if (!dir) return;
+      for (const name of readdirSync(dir)) if (/^\.stage-[a-f0-9-]{36}$/.test(name)) {
+        const path = join(dir, name); const stat = lstatSync(path);
+        if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) fail('UNSAFE_PATH');
+        rmSync(path);
+      }
+    },
+    async stage(who, accountId, chunks) {
+      const dir = directory(who, accountId, true); const path = join(dir, `.stage-${randomUUID()}`);
+      let handle; let size = 0;
+      try {
+        handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
+        for await (const chunk of chunks) {
+          if (!(chunk instanceof Uint8Array) || chunk.byteLength > 262144) fail('INVALID_INPUT');
+          size += chunk.byteLength; if (size > MAX_ATTACHMENT) fail('PAYLOAD_TOO_LARGE');
+          await handle.writeFile(chunk);
+        }
+        await handle.close(); handle = null;
+        return { chunks() { directory(who, accountId); return createReadStream(path, { highWaterMark: 65536, flags: constants.O_RDONLY | (constants.O_NOFOLLOW || 0) }); }, async cleanup() { directory(who, accountId); await unlink(path).catch(e => { if (e.code !== 'ENOENT') throw e; }); } };
+      } catch (e) { if (handle) await handle.close(); await unlink(path).catch(() => {}); throw e; }
+    },
     list(who, ref) {
       messageRow(who, ref);
       return all('SELECT * FROM attachments WHERE owner_id=? AND ref=? ORDER BY id', who, ref).map(dto);
+    },
+    stream(who, ref, id) {
+      const message = messageRow(who, ref); identifier(id);
+      const row = get('SELECT * FROM attachments WHERE owner_id=? AND ref=? AND id=?', who, ref, id); if (!row) fail('NOT_FOUND');
+      return Readable.from((async function* () {
+        const dir = directory(who, message.account_id); if (!dir) fail('NOT_FOUND');
+        const path = join(dir, id); let handle;
+        try {
+          if (lstatSync(path).isSymbolicLink()) fail('UNSAFE_PATH');
+          handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+          const stat = await handle.stat(); if (!stat.isFile() || stat.nlink !== 1 || stat.size !== row.size || stat.size > MAX_ATTACHMENT) fail('UNSAFE_PATH');
+          const digest = createHash('sha256');
+          for (let offset = 0; offset < row.size;) { const chunk = Buffer.alloc(Math.min(65536, row.size - offset)); const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset); if (!bytesRead) fail('ATTACHMENT_CORRUPT'); digest.update(chunk.subarray(0, bytesRead)); offset += bytesRead; }
+          if (digest.digest('hex') !== row.sha256) fail('ATTACHMENT_CORRUPT');
+          for (let offset = 0; offset < row.size;) { const chunk = Buffer.alloc(Math.min(65536, row.size - offset)); const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset); if (!bytesRead) fail('ATTACHMENT_CORRUPT'); offset += bytesRead; yield chunk.subarray(0, bytesRead); }
+        } finally { await handle?.close(); }
+      })());
     },
     async put(who, ref, { filename, contentType, chunks }) {
       const message = messageRow(who, ref); text(filename, 1024); text(contentType, 128);
@@ -78,6 +119,14 @@ export function createAttachments({ dataDir, run, all, get, messageRow }) {
       } catch (e) {
         if (e.code === 'ENOENT') fail('NOT_FOUND'); if (e.code === 'ELOOP') fail('UNSAFE_PATH'); throw e;
       } finally { if (handle) await handle.close(); }
+    },
+    removeMessageFiles(who, ref) {
+      const message = messageRow(who, ref); const dir = directory(who, message.account_id);
+      for (const row of all('SELECT id FROM attachments WHERE owner_id=? AND ref=?', who, ref)) {
+        identifier(row.id);
+        if (dir) rmSync(join(dir, row.id), { force: true });
+      }
+      run('DELETE FROM attachments WHERE owner_id=? AND ref=?', who, ref);
     },
     removeAccountFiles(who, accountId) {
       const path = directory(who, accountId);
