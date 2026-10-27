@@ -10,6 +10,14 @@
 
 **Spec:** ../specs/2026-10-27-cloud-mail-unified-design.md (approved by the user, including subsequent sidebar/publication/folder choices).
 
+## Delivery priority update — 2026-10-28
+
+The owner explicitly directed: prioritize making the web application ready for normal use, then start mobile development. This supersedes the original task numbering as an execution order; it does not remove the Android deliverable.
+
+Execute Tasks 1–5 first. Then execute the web/service portions of Task 7 (Linux CI, bounded service/helper image, protected preview, backup/rollback tooling) and the web portions of Task 8 (original-feature regression, tenant/invite/security tests, resource acceptance and authorized real-mailbox tests). Roll out the web application after its own acceptance gates pass. Android installation/notification checks are not prerequisites for the web rollout.
+
+Only after the web application is verified usable, start Task 6 Android implementation, complete Task 7 APK signing/release workflows and Task 8 Android/physical Honor acceptance. Existing SDK/signing preparation is retained; no further mobile development runs during the web delivery phase. Real-provider support remains individually verified or explicitly pending; neither a partial provider test nor a placeholder UI establishes broad compatibility.
+
 ## Global Constraints
 
 - Preserve every existing function, account, mail, setting and deployed customization; production backup/version comparison precedes deployment.
@@ -21,6 +29,7 @@
 - Android >=8, Android16 target testing; 15-minute inexact WorkManager cycle; no vendor registration and no permanent foreground notification.
 - SSH only via AWS alias with strict host checking; never export/upload the existing private SSH key.
 - Never run upstream mail-worker npm test blindly: it invokes deployment. Test commands must be made local and deployment separately named.
+- Web usability and rollout have priority over Android implementation; follow the delivery-priority update above.
 - Real provider and phone tests remain incomplete until observed; no fake connected states or fabricated coverage.
 
 ## Review Focus
