@@ -1,15 +1,17 @@
+import { session } from '@/auth/session.js';
 import axios from "axios";
 import router from "@/router";
 import i18n from "@/i18n/index.js";
 import {useSettingStore} from "@/store/setting.js";
 
 let http = axios.create({
-    baseURL: import.meta.env.VITE_BASE_URL
+    baseURL: import.meta.env.VITE_BASE_URL,
+    withCredentials: true
 });
 
 http.interceptors.request.use(config => {
     const { lang } = useSettingStore();
-    config.headers.Authorization = `${localStorage.getItem('token')}`
+    if (session.csrfToken && !['get','head','options'].includes((config.method || 'get').toLowerCase())) config.headers['X-CSRF-Token'] = session.csrfToken;
     config.headers['accept-language'] = lang
     return config
 })
@@ -33,7 +35,7 @@ http.interceptors.response.use((res) => {
                     grouping: true,
                     repeatNum: -4,
                 })
-                localStorage.removeItem('token')
+                session.reset()
                 router.replace('/login')
                 reject(data)
             } else if (data.code === 403) {
@@ -71,12 +73,12 @@ http.interceptors.response.use((res) => {
     },
     (error) => {
 
-        if (error.status === 403) {
-            location.reload();
-            return;
+        if (error.response?.status === 401 && error.response?.data?.error?.code === 'UNAUTHORIZED') {
+            session.reset();
+            router.replace('/login');
         }
 
-        const noMsg = error.config.noMsg;
+        const noMsg = error.config?.noMsg;
 
         if (noMsg) {
             return Promise.reject(error)

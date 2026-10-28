@@ -81,6 +81,7 @@
   </div>
 </template>
 <script setup>
+import { session } from "@/auth/session.js";
 import {reactive, ref, defineOptions} from 'vue'
 import {resetPassword, userDelete} from "@/request/my.js";
 import {useUserStore} from "@/store/user.js";
@@ -169,7 +170,7 @@ const deleteConfirm = () => {
     type: 'warning'
   }).then(() => {
     userDelete().then(() => {
-      localStorage.removeItem('token');
+      session.reset();
       router.replace('/login');
       ElMessage({
         message: t('delSuccessMsg'),

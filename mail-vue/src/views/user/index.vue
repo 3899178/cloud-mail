@@ -191,6 +191,7 @@
           </template>
         </el-input>
         <el-input type="password" v-model="addForm.password" :placeholder="$t('password')" @keyup.enter="submit"/>
+        <el-input v-model="addForm.code" :placeholder="$t('regKey')" autocomplete="off" @keyup.enter="submit"/>
         <el-select v-model="addForm.type" :placeholder="$t('perm')">
           <el-option v-for="item in roleList" :label="item.name" :value="item.roleId" :key="item.roleId"/>
         </el-select>

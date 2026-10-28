@@ -1,3 +1,4 @@
+import { createUploads } from '../routes/uploads.mjs';
 import { createWorkLimits } from '../core/limits.mjs';
 import { createOAuth } from '../providers/oauth.mjs';
 import { createProviderRegistry } from '../providers/registry.mjs';
@@ -12,8 +13,9 @@ export function createMailService({ store, clock = Date.now, clients, registry: 
   const oauth = createOAuth({ store, clock, clients, lifecycle }); let scheduler;
   const proton = createProton({ store, clock, lifecycle, transport: protonOptions.transport || createProtonTransport({ socketPath: protonOptions.socketPath || '/run/cloud-mail-proton/helper.sock' }) });
   const registry = suppliedRegistry || createProviderRegistry({ store, oauth, adapters: { proton: proton.adapter, ...adapters }, onChange: pair => scheduler?.wake(pair) });
-  const engine = createSyncEngine({ store, registry, limits, lifecycle }); const actions = createActions({ store, registry, limits, lifecycle });
+  const uploads = createUploads({store,lifecycle,clock});
+  const engine = createSyncEngine({ store, registry, limits, lifecycle }); const actions = createActions({ store, registry, limits, lifecycle, uploads });
   const downloads = createDownloads({ store, lifecycle });
   scheduler = createScheduler({ store, engine, clock });
-  return { oauth, proton, registry, engine, actions, scheduler, limits, lifecycle, downloads, start() { scheduler.start(); }, async close() { await lifecycle.close(); await actions.close(); await scheduler.close(); await registry.close?.(); } };
+  return { uploads, oauth, proton, registry, engine, actions, scheduler, limits, lifecycle, downloads, start() { scheduler.start(); }, async close() { await lifecycle.close(); await uploads.close(); await actions.close(); await scheduler.close(); await registry.close?.(); } };
 }

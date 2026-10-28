@@ -95,70 +95,12 @@ const publicService = {
 	},
 
 	async addUser(c, params) {
-		const { list } = params;
-
-		if (list.length === 0) return;
-
-		for (const emailRow of list) {
-			if (!verifyUtils.isEmail(emailRow.email)) {
-				throw new BizError(t('notEmail'));
-			}
-
-			if (!c.env.domain.includes(emailUtils.getDomain(emailRow.email))) {
-				throw new BizError(t('notEmailDomain'));
-			}
-
-			const { salt, hash } = await saltHashUtils.hashPassword(
-				emailRow.password || cryptoUtils.genRandomPwd()
-			);
-
-			emailRow.salt = salt;
-			emailRow.hash = hash;
-		}
-
-
-		const activeIp = reqUtils.getIp(c);
-		const { os, browser, device } = reqUtils.getUserAgent(c);
-		const activeTime = dayjs().format('YYYY-MM-DD HH:mm:ss');
-
-		const roleList = await roleService.roleSelectUse(c);
-		const defRole = roleList.find(roleRow => roleRow.isDefault === roleConst.isDefault.OPEN);
-
-		const userList = [];
-
-		for (const emailRow of list) {
-			let { email, hash, salt, roleName } = emailRow;
-			let type = defRole.roleId;
-
-			if (roleName) {
-				const roleRow = roleList.find(role => role.name === roleName);
-				type = roleRow ? roleRow.roleId : type;
-			}
-
-			const userSql = `INSERT INTO user (email, password, salt, type, os, browser, active_ip, create_ip, device, active_time, create_time)
-			VALUES ('${email}', '${hash}', '${salt}', '${type}', '${os}', '${browser}', '${activeIp}', '${activeIp}', '${device}', '${activeTime}', '${activeTime}')`
-
-			const accountSql = `INSERT INTO account (email, name, user_id)
-			VALUES ('${email}', '${emailUtils.getName(email)}', 0);`;
-
-			userList.push(c.env.db.prepare(userSql));
-			userList.push(c.env.db.prepare(accountSql));
-
-		}
-
-		userList.push(c.env.db.prepare(`UPDATE account SET user_id = (SELECT user_id FROM user WHERE user.email = account.email) WHERE user_id = 0;`))
-
-		try {
-			await c.env.db.batch(userList);
-		} catch (e) {
-			if(e.message.includes('SQLITE_CONSTRAINT')) {
-				throw new BizError(t('emailExistDatabase'))
-			} else {
-				throw e
-			}
-		}
-
-	},
+        if (!Array.isArray(params.list) || params.list.length > 100) throw new BizError('INVALID_INPUT');
+        for (const row of params.list) {
+            const role = row.roleName ? await roleService.selectByName(c, row.roleName) : null;
+            await userService.add(c, { ...row, type:role?.roleId, password:row.password || cryptoUtils.genRandomPwd() });
+        }
+    },
 
 	async genToken(c, params) {
 

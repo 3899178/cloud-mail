@@ -22,12 +22,14 @@ import verifyRecordService from './verify-record-service';
 
 const loginService = {
 
-	async register(c, params, oauth = false) {
+	async register(c, params, oauth = false, privilegedType, binding) {
 
 		const { email, password, token, code } = params;
 
 		let { regKey, register, registerVerify, regVerifyCount, minEmailPrefix, emailPrefixFilter } = await settingService.query(c)
 
+		// Every new user, including privileged creation, requires an owner-issued invitation.
+		regKey = settingConst.regKey.OPEN;
 		if (oauth) {
 			registerVerify = settingConst.registerVerify.CLOSE;
 			register = settingConst.register.OPEN;
@@ -80,6 +82,7 @@ const loginService = {
 			regKeyId = result?.regKeyId
 		}
 
+		if (privilegedType !== undefined && privilegedType !== null) type = privilegedType;
 		const accountRow = await accountService.selectByEmailIncludeDel(c, email);
 
 		if (accountRow && accountRow.isDel === isDel.DELETE) {
@@ -128,33 +131,30 @@ const loginService = {
 
 		const { salt, hash } = await saltHashUtils.hashPassword(password);
 
-		let consumedCode = null
-		const usingRegKey = regKey !== settingConst.regKey.CLOSE && type
-
-		if (usingRegKey && !await regKeyService.consumeCount(c, code)) {
-			if (regKey === settingConst.regKey.OPEN) {
-				throw new BizError(t('noRegKeyCount'))
-			}
-			type = null
-			regKeyId = 0
-			defType = await this.useDefaultRole(c, email)
+		// D1 batch is one transaction. Recheck all admission predicates inside it;
+		// changes() gates later statements, including invite use and OAuth assignment.
+		const db = c.env.db;
+		const bindingPredicate = binding
+			? ' AND EXISTS(SELECT 1 FROM oauth WHERE oauth_id=? AND platform=? AND oauth_user_id=? AND user_id=0)'
+			: '';
+		const bindingArgs = binding ? [binding.oauthId, binding.platform, binding.oauthUserId] : [];
+		const statements = [
+			db.prepare(`INSERT INTO user(email,reg_key_id,password,salt,type)
+			SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM reg_key WHERE rege_key_id=? AND code=? AND count>0 AND datetime(expire_time)>CURRENT_TIMESTAMP)
+			AND NOT EXISTS(SELECT 1 FROM account WHERE email=? COLLATE NOCASE)
+			AND NOT EXISTS(SELECT 1 FROM user WHERE email=? COLLATE NOCASE)${bindingPredicate} RETURNING user_id`)
+				.bind(email, regKeyId, hash, salt, type || defType, regKeyId, code, email, email, ...bindingArgs),
+			db.prepare('INSERT INTO account(user_id,email,name) SELECT last_insert_rowid(),?,? WHERE changes()=1')
+				.bind(email, emailUtils.getName(email)),
+			db.prepare('UPDATE reg_key SET count=count-1 WHERE rege_key_id=? AND changes()=1').bind(regKeyId)
+		];
+		if (binding) {
+			statements.push(db.prepare('UPDATE oauth SET user_id=(SELECT user_id FROM user WHERE email=? COLLATE NOCASE) WHERE oauth_id=? AND user_id=0 AND changes()=1')
+				.bind(email, binding.oauthId));
 		}
-
-		if (usingRegKey && type) {
-			consumedCode = code
-		}
-
-		let userId
-
-		try {
-			userId = await userService.insert(c, { email, regKeyId, password: hash, salt, type: type || defType });
-			await accountService.insert(c, { userId: userId, email, name: emailUtils.getName(email) });
-		} catch (error) {
-			if (consumedCode) {
-				await regKeyService.restoreCount(c, consumedCode)
-			}
-			throw error
-		}
+		const [created] = await db.batch(statements);
+		const userId = created.results[0]?.user_id;
+		if (!userId) throw new BizError('REGISTRATION_CONFLICT',409);
 
 		await userService.updateUserInfo(c, userId, true);
 
@@ -282,7 +282,7 @@ const loginService = {
 		const token = await userContext.getToken(c);
 		const authInfo = await c.env.kv.get(KvConst.AUTH_INFO + userId, { type: 'json' });
 		const index = authInfo.tokens.findIndex(item => item === token);
-		authInfo.tokens.splice(index, 1);
+		if (index >= 0) authInfo.tokens.splice(index, 1);
 		await c.env.kv.put(KvConst.AUTH_INFO + userId, JSON.stringify(authInfo), { expirationTtl: constant.TOKEN_EXPIRE });
 	}
 

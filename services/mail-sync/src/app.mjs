@@ -4,7 +4,7 @@ import { createWorkLimits } from './core/limits.mjs';
 import { createMailService } from './sync/service.mjs';
 import { mountMailRoutes } from './routes/mail.mjs';
 
-const statuses = { UNAUTHORIZED: 401, NOT_FOUND: 404, CONFLICT: 409, INVALID_TRANSITION: 409, BUSY: 503, PAYLOAD_TOO_LARGE: 413, INVALID_REF: 400, INVALID_CURSOR: 400, INVALID_INPUT: 400, AUTH_REQUIRED: 401, PROVIDER_UNAVAILABLE: 503, SYNC_FAILED: 502, RATE_LIMITED: 429, RESYNC_REQUIRED: 409, INCOMPLETE_SWEEP: 409 };
+const statuses = { UNAUTHORIZED: 401, NOT_FOUND: 404, CONFLICT: 409, INVALID_TRANSITION: 409, BUSY: 503, PAYLOAD_TOO_LARGE: 413, INVALID_REF: 400, INVALID_CURSOR: 400, INVALID_INPUT: 400, AUTH_REQUIRED: 401, PROVIDER_UNAVAILABLE: 503, SYNC_FAILED: 502, RATE_LIMITED: 429, RESYNC_REQUIRED: 409, INCOMPLETE_SWEEP: 409, STORAGE_FULL:507, UPLOAD_EXPIRED:410, UPLOAD_CORRUPT:400 };
 async function boundedBody(request) {
   if (!request.body) return new Uint8Array();
   const reader = request.body.getReader(); const chunks = []; let length = 0;
@@ -33,7 +33,8 @@ export function createSyncApp({ store, gatewayKey, clock = Date.now, registry, c
   app.use('*', async (c, next) => {
     c.header('Cache-Control', 'no-store');
     const token = c.req.header('x-gateway-assertion'); if (!token) fail('UNAUTHORIZED');
-    const body = await work.parse(() => boundedBody(c.req.raw));
+    const streaming = c.req.method === 'PUT' && /^\/v1\/uploads\/[A-Za-z0-9_-]+$/.test(c.req.path);
+    const body = streaming ? new Uint8Array() : await work.parse(() => boundedBody(c.req.raw));
     const url = new URL(c.req.url);
     const claims = await verifyGatewayAssertion({ key, token, method: c.req.method, path: url.pathname + url.search, body, now: clock(), consumeNonce: (ownerId, nonce, exp) => store.assertions.consume(ownerId, nonce, exp) });
     c.set('ownerId', claims.ownerId);
@@ -49,6 +50,26 @@ export function createSyncApp({ store, gatewayKey, clock = Date.now, registry, c
   app.get('/v1/messages/:ref', c => c.json({ message: store.messages.get(c.get('ownerId'), c.req.param('ref')) }));
   app.get('/v1/operations/:id', c => c.json({ operation: store.operations.get(c.get('ownerId'), c.req.param('id')) }));
   app.get('/v1/devices', c => c.json({ devices: store.devices.list(c.get('ownerId')) }));
+  app.post('/v1/uploads', async c => {
+    let input;
+    try {
+      input = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(c.get('body')));
+    } catch {
+      fail('INVALID_INPUT');
+    }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) fail('INVALID_INPUT');
+    return c.json({ upload: await service.uploads.create(c.get('ownerId'), input) }, 201);
+  });
+  app.put('/v1/uploads/:id', async c => {
+    const upload = await service.uploads.receive(
+      c.get('ownerId'), c.req.param('id'), c.req.header('x-upload-capability'), c.req.raw
+    );
+    return c.json({ upload });
+  });
+  app.delete('/v1/uploads/:id', async c => {
+    await service.uploads.cancel(c.get('ownerId'), c.req.param('id'));
+    return c.json({ removed: true });
+  });
   mountMailRoutes(app, { store, service });
   return app;
 }

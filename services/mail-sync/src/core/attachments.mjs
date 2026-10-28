@@ -1,4 +1,4 @@
-import { constants, lstatSync, mkdirSync, realpathSync, rmSync, readdirSync } from 'node:fs';
+import { constants, lstatSync, mkdirSync, realpathSync, rmSync, readdirSync, statfsSync } from 'node:fs';
 import { open, unlink } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -34,6 +34,29 @@ export function createAttachments({ dataDir, run, all, get, messageRow }) {
     return current;
   }
   return {
+    availableBytes() {
+      const stat = statfsSync(root);
+      return Number(stat.bavail) * Number(stat.bsize);
+    },
+    cleanupComposeStages() {
+      for (const who of readdirSync(root)) {
+        if (!/^[A-Za-z0-9_-]{1,128}$/.test(who)) continue;
+        const ownerDir = join(root, who);
+        const ownerStat = lstatSync(ownerDir);
+        if (ownerStat.isSymbolicLink() || !ownerStat.isDirectory()) fail('UNSAFE_PATH');
+        for (const id of readdirSync(ownerDir)) {
+          if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) continue;
+          const dir = directory(who, id);
+          for (const name of readdirSync(dir)) {
+            if (!/^\.compose-[a-f0-9-]{36}$/.test(name)) continue;
+            const path = join(dir, name);
+            const stat = lstatSync(path);
+            if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) fail('UNSAFE_PATH');
+            rmSync(path);
+          }
+        }
+      }
+    },
     cleanupStages(who, accountId) {
       const dir = directory(who, accountId); if (!dir) return;
       for (const name of readdirSync(dir)) if (/^\.stage-[a-f0-9-]{36}$/.test(name)) {
@@ -42,8 +65,8 @@ export function createAttachments({ dataDir, run, all, get, messageRow }) {
         rmSync(path);
       }
     },
-    async stage(who, accountId, chunks) {
-      const dir = directory(who, accountId, true); const path = join(dir, `.stage-${randomUUID()}`);
+    async stage(who, accountId, chunks, { compose = false } = {}) {
+      const dir = directory(who, accountId, true); const path = join(dir, `${compose ? ".compose" : ".stage"}-${randomUUID()}`);
       let handle; let size = 0;
       try {
         handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);

@@ -5,7 +5,7 @@ import { createAccountLifecycle } from '../core/lifecycle.mjs';
 
 const sends = new Set(['send', 'reply', 'forward']);
 const address = value => { text(value, 320); if (!/^[^\s<>@,;\r\n]+@[^\s<>@,;\r\n]+$/.test(value)) fail('INVALID_INPUT'); return value; };
-export function createActions({ store, registry, limits, lifecycle = createAccountLifecycle({ store }) }) {
+export function createActions({ store, registry, limits, uploads, lifecycle = createAccountLifecycle({ store }) }) {
   const pending = new Map();
   async function execute({ ownerId, accountId, ref = null, kind, message = {}, signal, lease }) {
     const account = store.accounts.get(ownerId, accountId);
@@ -32,6 +32,11 @@ export function createActions({ store, registry, limits, lifecycle = createAccou
     let session; let submitting = false;
     try {
       signal?.throwIfAborted();
+      if (sends.has(kind) && message.uploadIds !== undefined) {
+        if (!uploads) fail('INVALID_INPUT');
+        outgoing.attachments.push(...await uploads.take(ownerId, accountId, message.uploadIds, lease));
+        lease.check();
+      }
       session = await registry.open({ ownerId, account, signal });
       lease.check();
       if (sends.has(kind)) { submitting = true; await session.send(outgoing, { signal }); }
@@ -50,7 +55,13 @@ export function createActions({ store, registry, limits, lifecycle = createAccou
       const code = providerCode(error);
       if (code === 'AUTH_REQUIRED' && lease.current()) store.accounts.setStatus(ownerId, accountId, 'needs-auth', code);
       return store.operations.update(ownerId, operation.id, { state: uncertain ? 'uncertain' : 'failed', errorCode: uncertain ? 'SEND_UNCERTAIN' : code });
-    } finally { for (const a of outgoing?.attachments || []) a.content.destroy?.(); await session?.close().catch(() => {}); }
+    } finally {
+      for (const attachment of outgoing?.attachments || []) {
+        attachment.content.destroy?.();
+        await attachment.cleanup?.();
+      }
+      await session?.close().catch(() => {});
+    }
   }
   return {
     execute(options) {

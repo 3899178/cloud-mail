@@ -1,3 +1,4 @@
+import loginService from './login-service';
 import BizError from '../error/biz-error';
 import accountService from './account-service';
 import orm from '../entity/orm';
@@ -322,47 +323,9 @@ const userService = {
 	},
 
 	async add(c, params) {
-
-		let { email, type, password } = params;
-
-		if (!c.env.domain.includes(emailUtils.getDomain(email))) {
-			throw new BizError(t('notEmailDomain'));
-		}
-
-		if (password.length < 6) {
-			throw new BizError(t('pwdMinLength'));
-		}
-
-		const accountRow = await accountService.selectByEmailIncludeDel(c, email);
-
-		if (accountRow && accountRow.isDel === isDel.DELETE) {
-			throw new BizError(t('isDelUser'));
-		}
-
-		if (accountRow) {
-			throw new BizError(t('isRegAccount'));
-		}
-
-		let role;
-		if (type === undefined) {
-			role = await roleService.selectDefaultRole(c);
-			type = role?.roleId;
-		} else {
-			role = await roleService.selectById(c, type);
-		}
-
-		if (!role) {
-			throw new BizError(t('roleNotExist'));
-		}
-
-		const { salt, hash } = await saltHashUtils.hashPassword(password);
-
-		const userId = await userService.insert(c, { email, password: hash, salt, type });
-
-		await userService.updateUserInfo(c, userId, true);
-
-		await accountService.insert(c, { userId: userId, email, type, name: emailUtils.getName(email) });
-	},
+        // Privileged creation also consumes an owner-issued invitation; the existing permissioned role choice remains available.
+        return loginService.register(c, params, true, params.type);
+    },
 
 	async resetDaySendCount(c) {
 		// 仅 UTC 0 点执行，便于配合每小时 cron

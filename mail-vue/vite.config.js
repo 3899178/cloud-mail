@@ -10,8 +10,10 @@ export default defineConfig(({mode}) => {
     const env = loadEnv(mode, process.cwd(), 'VITE')
     return {
         server: {
-            host: true,
+            host: '127.0.0.1',
             port: 3001,
+            strictPort: true,
+            proxy: { '/api': { target: 'http://127.0.0.1:8787', changeOrigin: false } },
             hmr: true,
         },
         base: env.VITE_STATIC_URL || '/',

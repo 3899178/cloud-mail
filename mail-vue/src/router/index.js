@@ -1,3 +1,5 @@
+import { clearPermissionRoutes } from '@/auth/permission-routes.mjs';
+import { session } from '@/auth/session.js';
 import {createRouter, createWebHistory} from 'vue-router'
 import NProgress from 'nprogress';
 import {useUiStore} from "@/store/ui.js";
@@ -81,6 +83,8 @@ const router = createRouter({
     routes
 })
 
+session.onReset = () => clearPermissionRoutes(router);
+
 NProgress.configure({
     showSpinner: false,   // 不显示旋转图标
     trickleSpeed: 50,    // 自动递增速度
@@ -102,7 +106,7 @@ router.beforeEach((to, from, next) => {
         }, 100)
     }
 
-    const token = localStorage.getItem('token')
+    const token = session.authenticated
 
     if (!token && !to.path.startsWith('/login')) {
         return next({name: 'login'})
@@ -114,7 +118,7 @@ router.beforeEach((to, from, next) => {
     }
 
     if (token && to.path.startsWith('/login')) {
-        return next(from.path)
+        return next('/inbox')
     }
 
     next()
