@@ -1,4 +1,6 @@
 import { session } from '@/auth/session.js';
+import { isStaleSession } from '@/auth/session-core.mjs';
+import { installSessionFence } from '@/auth/http-session.mjs';
 import axios from "axios";
 import router from "@/router";
 import i18n from "@/i18n/index.js";
@@ -9,6 +11,8 @@ let http = axios.create({
     withCredentials: true
 });
 
+installSessionFence(http, session);
+
 http.interceptors.request.use(config => {
     const { lang } = useSettingStore();
     if (session.csrfToken && !['get','head','options'].includes((config.method || 'get').toLowerCase())) config.headers['X-CSRF-Token'] = session.csrfToken;
@@ -17,6 +21,8 @@ http.interceptors.request.use(config => {
 })
 
 http.interceptors.response.use((res) => {
+        // Check again at the state-writing consumer, after earlier interceptor microtasks.
+        res.config.sessionLease?.assertCurrent();
 
         return new Promise((resolve, reject) => {
 
@@ -72,6 +78,9 @@ http.interceptors.response.use((res) => {
         })
     },
     (error) => {
+        error.config?.sessionLease?.assertCurrent();
+
+        if (isStaleSession(error)) return Promise.reject(error);
 
         if (error.response?.status === 401 && error.response?.data?.error?.code === 'UNAUTHORIZED') {
             session.reset();

@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { EmailUnreadEnum } from '@/enums/email-enum.js'
 import { sanitizeEmailHtml } from '@/utils/email-html.js'
+import { session } from '@/auth/session.js'
+import { isStaleSession } from '@/auth/session-core.mjs'
 
 export const useEmailStore = defineStore('email', {
     state: () => ({
@@ -36,12 +38,15 @@ export const useEmailStore = defineStore('email', {
             }
         },
         fetchList(request) {
+            const lease = session.lease()
             return request(0).then(data => {
+                lease.assertCurrent()
                 request(1).then(fullData => {
+                    lease.assertCurrent()
                     const list = Array.isArray(fullData) ? fullData : fullData?.list
                     this.applyFullList(list)
                 }).catch(e => {
-                    console.error(e)
+                    if (!isStaleSession(e)) console.error(e)
                 })
                 return data
             })

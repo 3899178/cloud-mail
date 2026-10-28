@@ -22,11 +22,21 @@ export function createUploads({
     return e;
   };
   async function remove(e) {
-    entries.delete(e.id);
-    await e.stage?.cleanup();
+    // A cleanup tombstone remains owned, quota-reserved and nonconsumable until unlink succeeds.
+    e.state = 'cleanup-pending';
+    if (e.cleaning) return e.cleaning;
+    e.cleaning = (async () => {
+      await e.stage?.cleanup();
+      if (entries.get(e.id) === e) entries.delete(e.id);
+    })();
+    try { await e.cleaning; }
+    finally { e.cleaning = null; }
   }
   async function sweep() {
-    for (const e of entries.values()) if (!['uploading', 'consuming'].includes(e.state) && (e.expiresAt <= clock() || !e.current())) await remove(e);
+    const expired = [...entries.values()].filter(e => !['uploading', 'consuming'].includes(e.state)
+      && (e.state === 'cleanup-pending' || e.expiresAt <= clock() || !e.current()));
+    // Failed records stay for the next timer/cancel/close. One bad file cannot block the rest.
+    await Promise.allSettled(expired.map(remove));
   }
   const timer = setInterval(() => sweep().catch(() => {}), 30000);
   timer.unref();
@@ -129,7 +139,8 @@ export function createUploads({
             if (size !== e.size || hash.digest('hex') !== e.sha256) fail('UPLOAD_CORRUPT');
           }
           e.stage = await store.attachments.stage(who, e.accountId, chunks(), {
-            compose: true
+            compose: true,
+            onStage: stage => { e.stage = stage; }
           });
           lease.check();
           e.state = 'ready';
@@ -141,7 +152,7 @@ export function createUploads({
             sha256: e.sha256
           };
         } catch (error) {
-          await remove(e);
+          await remove(e).catch(() => {});
           if (['ENOSPC', 'EDQUOT'].includes(error.code)) fail('STORAGE_FULL');
           throw error;
         } finally {
@@ -184,7 +195,7 @@ export function createUploads({
           cleanup: () => remove(e)
         }));
       } catch (error) {
-        await Promise.all(selected.map(remove));
+        await Promise.allSettled(selected.map(remove));
         throw error;
       }
     },
@@ -194,12 +205,15 @@ export function createUploads({
       await remove(e);
     },
     async clearAccount(who, id) {
-      for (const e of [...entries.values()]) if (e.ownerId === who && e.accountId === id) await remove(e);
+      const results = await Promise.allSettled([...entries.values()]
+        .filter(e => e.ownerId === who && e.accountId === id).map(remove));
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
     },
     async close() {
       closed = true;
       clearInterval(timer);
-      for (const e of [...entries.values()]) await remove(e);
+      await Promise.allSettled([...entries.values()].map(remove));
       key.fill(0);
     }
   };

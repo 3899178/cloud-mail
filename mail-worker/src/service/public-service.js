@@ -1,11 +1,11 @@
 import BizError from '../error/biz-error';
+import loginService from './login-service';
 import orm from '../entity/orm';
 import { v4 as uuidv4 } from 'uuid';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import saltHashUtils from '../utils/crypto-utils';
 import cryptoUtils from '../utils/crypto-utils';
 import emailUtils from '../utils/email-utils';
-import roleService from './role-service';
 import verifyUtils from '../utils/verify-utils';
 import { t } from '../i18n/i18n';
 import reqUtils from '../utils/req-utils';
@@ -96,10 +96,11 @@ const publicService = {
 
 	async addUser(c, params) {
         if (!Array.isArray(params.list) || params.list.length > 100) throw new BizError('INVALID_INPUT');
+        const list = [];
         for (const row of params.list) {
-            const role = row.roleName ? await roleService.selectByName(c, row.roleName) : null;
-            await userService.add(c, { ...row, type:role?.roleId, password:row.password || cryptoUtils.genRandomPwd() });
+            list.push({ ...row, type:undefined, password:row.password || cryptoUtils.genRandomPwd() });
         }
+        await loginService.registerMany(c, list);
     },
 
 	async genToken(c, params) {

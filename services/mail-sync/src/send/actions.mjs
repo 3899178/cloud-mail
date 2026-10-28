@@ -56,11 +56,15 @@ export function createActions({ store, registry, limits, uploads, lifecycle = cr
       if (code === 'AUTH_REQUIRED' && lease.current()) store.accounts.setStatus(ownerId, accountId, 'needs-auth', code);
       return store.operations.update(ownerId, operation.id, { state: uncertain ? 'uncertain' : 'failed', errorCode: uncertain ? 'SEND_UNCERTAIN' : code });
     } finally {
-      for (const attachment of outgoing?.attachments || []) {
-        attachment.content.destroy?.();
-        await attachment.cleanup?.();
+      try {
+        for (const attachment of outgoing?.attachments || []) {
+          try { attachment.content.destroy?.(); } catch { /* continue cleanup */ }
+          // Upload cleanup retains its own retryable tombstone. It cannot replace the durable source result.
+          try { await attachment.cleanup?.(); } catch { /* retried by upload sweep/cancel/close */ }
+        }
+      } finally {
+        await session?.close().catch(() => {});
       }
-      await session?.close().catch(() => {});
     }
   }
   return {

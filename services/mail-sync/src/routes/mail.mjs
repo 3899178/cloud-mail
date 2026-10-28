@@ -25,8 +25,8 @@ export function mountMailRoutes(app, { store, service, callbackGatewayOwner = 'o
   app.put('/v1/accounts/:id/credentials', async c => {
     const account = store.accounts.get(owner(c), c.req.param('id')); const value = protocol(account.provider, account.address, json(c));
     return service.lifecycle.transition(owner(c), account.id, { commit: async () => {
-      await service.uploads.clearAccount(owner(c), account.id);
-      await service.registry.invalidate(owner(c), account.id);
+      try { await service.uploads.clearAccount(owner(c), account.id); }
+      finally { await service.registry.invalidate(owner(c), account.id); }
       store.credentials.set(owner(c), account.id, 'protocol', JSON.stringify(value));
       return c.json({ account: store.accounts.setStatus(owner(c), account.id, 'pending') });
     } });
@@ -44,8 +44,8 @@ export function mountMailRoutes(app, { store, service, callbackGatewayOwner = 'o
   });
   app.delete('/v1/accounts/:id', async c => {
     return service.lifecycle.transition(owner(c), c.req.param('id'), { commit: async () => {
-      await service.uploads.clearAccount(owner(c), c.req.param('id'));
-      await service.registry.invalidate(owner(c), c.req.param('id'));
+      try { await service.uploads.clearAccount(owner(c), c.req.param('id')); }
+      finally { await service.registry.invalidate(owner(c), c.req.param('id')); }
       if (store.accounts.get(owner(c), c.req.param('id')).provider === 'proton') await service.proton.cancel(owner(c), c.req.param('id'));
       store.accounts.remove(owner(c), c.req.param('id')); return c.json({ removed: true });
     } });

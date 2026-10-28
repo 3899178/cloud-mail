@@ -14,17 +14,19 @@ export function createOwnerSession({
   session.onReset = clear;
   return {
     async load(loadUser) {
+      const lease = session.advance();
+      clear();
       try {
         const user = await loadUser();
+        lease.assertCurrent();
         if (!user?.email || !user.account || !Array.isArray(user.permKeys)) throw new Error('USER_UNAVAILABLE');
-        clear();
         userStore.user = user;
         accountStore.currentAccountId = user.account.accountId;
         accountStore.currentAccount = user.account;
         installPermissionRoutes(router, routesFor(user.permKeys));
         return user;
       } catch (error) {
-        session.reset();
+        if (lease.current()) session.reset();
         throw error;
       }
     }

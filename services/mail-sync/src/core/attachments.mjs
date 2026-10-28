@@ -65,18 +65,30 @@ export function createAttachments({ dataDir, run, all, get, messageRow }) {
         rmSync(path);
       }
     },
-    async stage(who, accountId, chunks, { compose = false } = {}) {
+    async stage(who, accountId, chunks, { compose = false, onStage } = {}) {
       const dir = directory(who, accountId, true); const path = join(dir, `${compose ? ".compose" : ".stage"}-${randomUUID()}`);
       let handle; let size = 0;
+      const stage = {
+        chunks() {
+          directory(who, accountId);
+          return createReadStream(path, { highWaterMark: 65536, flags: constants.O_RDONLY | (constants.O_NOFOLLOW || 0) });
+        },
+        async cleanup() {
+          directory(who, accountId);
+          // No success flag before unlink: EIO/EBUSY must remain retryable; ENOENT is idempotent success.
+          await unlink(path).catch(error => { if (error.code !== 'ENOENT') throw error; });
+        }
+      };
       try {
         handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0), 0o600);
+        onStage?.(stage);
         for await (const chunk of chunks) {
           if (!(chunk instanceof Uint8Array) || chunk.byteLength > 262144) fail('INVALID_INPUT');
           size += chunk.byteLength; if (size > MAX_ATTACHMENT) fail('PAYLOAD_TOO_LARGE');
           await handle.writeFile(chunk);
         }
         await handle.close(); handle = null;
-        return { chunks() { directory(who, accountId); return createReadStream(path, { highWaterMark: 65536, flags: constants.O_RDONLY | (constants.O_NOFOLLOW || 0) }); }, async cleanup() { directory(who, accountId); await unlink(path).catch(e => { if (e.code !== 'ENOENT') throw e; }); } };
+        return stage;
       } catch (e) { if (handle) await handle.close(); await unlink(path).catch(() => {}); throw e; }
     },
     list(who, ref) {

@@ -11,6 +11,7 @@ import { perm } from '../src/entity/perm';
 import { rolePerm } from '../src/entity/role-perm';
 import Kv from '../src/const/kv-const';
 import jwt from '../src/utils/jwt-utils';
+import registrationMigration from '../migrations/0002_registration_admission.sql?raw';
 export async function fixture() {
  for (const table of [user,account,email,att,role,regKey,oauth,perm,rolePerm]) {
   const {name,columns}=getTableConfig(table);
@@ -19,6 +20,7 @@ export async function fixture() {
  }
  // Corresponding additive indexes in src/init/init.js v1_4DB/v1_6DB.
  await env.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_account_email_nocase ON account(email COLLATE NOCASE); CREATE UNIQUE INDEX IF NOT EXISTS idx_user_email_nocase ON user(email COLLATE NOCASE); CREATE UNIQUE INDEX IF NOT EXISTS idx_setting_code ON reg_key(code COLLATE NOCASE);');
+ await env.db.exec(registrationMigration.replace(/^--.*$/gm, ''));
  await env.kv.put(Kv.SETTING,JSON.stringify({register:0,regKey:1,registerVerify:1,minEmailPrefix:1,emailPrefixFilter:'',syncDelete:1,resendTokens:{},title:'Mail',background:'',manyEmail:0,addEmail:0}));
  await env.db.prepare("INSERT INTO role(role_id,name,key,is_default,avail_domain) VALUES(1,'member','member',1,'example.test')").run();
  for (const id of [1,2]) {

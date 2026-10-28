@@ -19,10 +19,11 @@ import dayjs from 'dayjs';
 import { toUtc } from '../utils/date-uitil';
 import { t } from '../i18n/i18n.js';
 import verifyRecordService from './verify-record-service';
+import { registrationStatements, commitBulkRegistrations, loadRegistrationContexts } from './registration-batch';
 
 const loginService = {
 
-	async register(c, params, oauth = false, privilegedType, binding) {
+	async prepareRegistration(c, params, oauth = false, privilegedType, binding, context) {
 
 		const { email, password, token, code } = params;
 
@@ -71,7 +72,7 @@ const loginService = {
 		let regKeyId = 0
 
 		if (regKey === settingConst.regKey.OPEN) {
-			const result = await this.handleOpenRegKey(c, regKey, code)
+			const result = await this.handleOpenRegKey(c, regKey, code, context?.invitation)
 			type = result?.type
 			regKeyId = result?.regKeyId
 		}
@@ -83,7 +84,7 @@ const loginService = {
 		}
 
 		if (privilegedType !== undefined && privilegedType !== null) type = privilegedType;
-		const accountRow = await accountService.selectByEmailIncludeDel(c, email);
+		const accountRow = context ? context.account : await accountService.selectByEmailIncludeDel(c, email);
 
 		if (accountRow && accountRow.isDel === isDel.DELETE) {
 			throw new BizError(t('isDelUser'));
@@ -96,12 +97,12 @@ const loginService = {
 		let defType = null
 
 		if (!type) {
-			const roleRow = await roleService.selectDefaultRole(c);
+			const roleRow = context ? context.defaultRole : await roleService.selectDefaultRole(c);
 			defType = roleRow.roleId
 		}
 
 
-		const roleRow = await roleService.selectById(c, type || defType);
+		const roleRow = context ? context.role : await roleService.selectById(c, type || defType);
 
 		if(!roleService.hasAvailDomainPerm(roleRow.availDomain, email)) {
 
@@ -131,32 +132,15 @@ const loginService = {
 
 		const { salt, hash } = await saltHashUtils.hashPassword(password);
 
-		// D1 batch is one transaction. Recheck all admission predicates inside it;
-		// changes() gates later statements, including invite use and OAuth assignment.
-		const db = c.env.db;
-		const bindingPredicate = binding
-			? ' AND EXISTS(SELECT 1 FROM oauth WHERE oauth_id=? AND platform=? AND oauth_user_id=? AND user_id=0)'
-			: '';
-		const bindingArgs = binding ? [binding.oauthId, binding.platform, binding.oauthUserId] : [];
-		const statements = [
-			db.prepare(`INSERT INTO user(email,reg_key_id,password,salt,type)
-			SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM reg_key WHERE rege_key_id=? AND code=? AND count>0 AND datetime(expire_time)>CURRENT_TIMESTAMP)
-			AND NOT EXISTS(SELECT 1 FROM account WHERE email=? COLLATE NOCASE)
-			AND NOT EXISTS(SELECT 1 FROM user WHERE email=? COLLATE NOCASE)${bindingPredicate} RETURNING user_id`)
-				.bind(email, regKeyId, hash, salt, type || defType, regKeyId, code, email, email, ...bindingArgs),
-			db.prepare('INSERT INTO account(user_id,email,name) SELECT last_insert_rowid(),?,? WHERE changes()=1')
-				.bind(email, emailUtils.getName(email)),
-			db.prepare('UPDATE reg_key SET count=count-1 WHERE rege_key_id=? AND changes()=1').bind(regKeyId)
-		];
-		if (binding) {
-			statements.push(db.prepare('UPDATE oauth SET user_id=(SELECT user_id FROM user WHERE email=? COLLATE NOCASE) WHERE oauth_id=? AND user_id=0 AND changes()=1')
-				.bind(email, binding.oauthId));
-		}
-		const [created] = await db.batch(statements);
+		return { email, code, regKeyId, type: type || defType, hash, salt, binding, registerVerify, regVerifyOpen, regVerifyCount };
+	},
+
+	async register(c, params, oauth = false, privilegedType, binding) {
+		const row = await this.prepareRegistration(c, params, oauth, privilegedType, binding);
+		const [created] = await c.env.db.batch(registrationStatements(c, row));
 		const userId = created.results[0]?.user_id;
 		if (!userId) throw new BizError('REGISTRATION_CONFLICT',409);
-
-		await userService.updateUserInfo(c, userId, true);
+		const { registerVerify, regVerifyOpen, regVerifyCount } = row;
 
 		if (registerVerify === settingConst.registerVerify.COUNT && !regVerifyOpen) {
 			const row = await verifyRecordService.increaseRegCount(c);
@@ -167,17 +151,26 @@ const loginService = {
 
 	},
 
+	async registerMany(c, list) {
+		const contexts = await loadRegistrationContexts(c, list);
+		const rows = [];
+		for (const [index, params] of list.entries()) {
+			rows.push(await this.prepareRegistration(c, params, true, contexts[index].privilegedType, undefined, contexts[index]));
+		}
+		await commitBulkRegistrations(c, rows);
+	},
+
 	async registerVerify() {
 
 	},
 
-	async handleOpenRegKey(c, regKey, code) {
+	async handleOpenRegKey(c, regKey, code, invitation) {
 
 		if (!code) {
 			throw new BizError(t('emptyRegKey'));
 		}
 
-		const regKeyRow = await regKeyService.selectByCode(c, code);
+		const regKeyRow = invitation === undefined ? await regKeyService.selectByCode(c, code) : invitation;
 
 		if (!regKeyRow) {
 			throw new BizError(t('notExistRegKey'));
