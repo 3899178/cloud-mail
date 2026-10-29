@@ -3,6 +3,17 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fail } from '../../../../shared/unified-mail/index.mjs';
 
+async function* boundedAttachment(content, signal) {
+  for await (const chunk of content) {
+    if (!(chunk instanceof Uint8Array)) fail('INVALID_INPUT');
+    // Decoder/async-iterator buffering can coalesce otherwise valid MIME lines.
+    for (let offset = 0; offset < chunk.byteLength; offset += 65536) {
+      signal?.throwIfAborted();
+      yield chunk.subarray(offset, offset + 65536);
+    }
+  }
+}
+
 export async function parseMime(source, { stage, signal }) {
   const parser = new MailParser({ skipHtmlToText: true, skipTextToHtml: true, skipImageLinks: true });
   let rawBytes = 0; let headers; let text = ''; let html = ''; const attachments = [];
@@ -19,7 +30,7 @@ export async function parseMime(source, { stage, signal }) {
     for await (const part of parser) {
       if (part.type === 'attachment') {
         if (attachments.length >= 100) fail('PAYLOAD_TOO_LARGE');
-        try { attachments.push({ filename: part.filename || 'attachment', contentType: part.contentType || 'application/octet-stream', staged: await stage(part.content) }); }
+        try { attachments.push({ filename: part.filename || 'attachment', contentType: part.contentType || 'application/octet-stream', staged: await stage(boundedAttachment(part.content, signal)) }); }
         finally { part.release(); }
       } else if (part.type === 'text') {
         text = part.text || ''; html = part.html || '';

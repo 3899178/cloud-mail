@@ -2,7 +2,8 @@
 export function* quotaMime() {
   yield 'Content-Type: multipart/mixed; boundary=q\r\n\r\n--q\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=quota.bin\r\nContent-Transfer-Encoding: base64\r\n\r\n';
   // 57 raw bytes encode to a standard 76-character MIME line. Keep each
-  // source chunk bounded so the decoder never emits a multi-MiB stage chunk.
+  // source chunk bounded. Decoder buffering can still coalesce chunks; the
+  // production MIME adapter independently bounds decoded staging chunks.
   const block=57*256;
   for(let offset=0;offset<3*1024*1024;offset+=block){
     const encoded=Buffer.alloc(Math.min(block,3*1024*1024-offset)).toString('base64');
