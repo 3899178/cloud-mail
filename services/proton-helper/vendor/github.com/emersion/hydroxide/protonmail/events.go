@@ -2,6 +2,7 @@ package protonmail
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 )
 
@@ -134,7 +135,7 @@ func (update *EventMessageUpdate) Patch(msg *Message) {
 
 type rawEventMessage struct {
 	ID      string
-	Action  EventAction
+	Action  *EventAction
 	Message json.RawMessage `json:",omitempty"`
 }
 
@@ -143,9 +144,12 @@ func (em *EventMessage) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
+	if raw.Action == nil || *raw.Action < EventDelete || *raw.Action > EventUpdateFlags {
+		return errors.New("protonmail: missing or invalid message event action")
+	}
 	em.ID = raw.ID
-	em.Action = raw.Action
-	switch raw.Action {
+	em.Action = *raw.Action
+	switch em.Action {
 	case EventCreate:
 		em.Created = new(Message)
 		return json.Unmarshal(raw.Message, em.Created)

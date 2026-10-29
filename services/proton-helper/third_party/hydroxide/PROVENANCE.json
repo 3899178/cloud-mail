@@ -52,7 +52,7 @@
     {
       "path": "protonmail/events.go",
       "originalSha256": "ce46c1e724ac40baf29f4e515fe64f2535a7b8eae854643887bfa44089d1b9ca",
-      "productSha256": "651a630daa92f369d323a42c4d38f63e0b9d5412a8a606908876dff93d65e8cf",
+      "productSha256": "354b682cf7f79dee906d4ebf8962c7aeb95b75b594ce3b2acfca523c773a2464",
       "patched": true
     },
     {
@@ -133,13 +133,14 @@
     },
     {
       "path": "protonmail/events.go",
-      "reason": "Task7a: expose presence-aware More and raw Labels to reject incomplete event chains and force safe label-definition recovery",
+      "reason": "Task7a: expose presence-aware More and raw Labels; fix I1: require present non-null known message Action before a delta can grant removal",
       "diff": "../../task7a-client.patch"
     }
   ],
   "localAdditions": [
     "protonmail/auth_bounds_test.go",
-    "protonmail/message_actions_test.go"
+    "protonmail/message_actions_test.go",
+    "protonmail/event_actions_test.go"
   ],
   "originalHashSource": "Exact git blob bytes at the pinned revision (not Windows autocrlf checkout bytes)"
 }
