@@ -31,6 +31,26 @@ import (
 type fixtureZeros struct{}
 
 func (fixtureZeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+func resourceMessageEvent(phase int64, message func(string) *pm.Message) map[string]any {
+	id := "new"
+	action := pm.EventCreate
+	if phase == 2 || phase == 3 {
+		action = pm.EventUpdate
+	}
+	if phase == 4 {
+		action = pm.EventDelete
+	}
+	if phase == 5 {
+		id = "large"
+	}
+	change := map[string]any{"ID": id, "Action": action}
+	// The pinned event decoder requires Message for create/update, even though
+	// snapshots independently fetch authoritative metadata by the exact IDs.
+	if action != pm.EventDelete {
+		change["Message"] = message(id)
+	}
+	return change
+}
 func TestResourceProviderChild(t *testing.T) {
 	if os.Getenv("CLOUD_MAIL_RESOURCE_PROVIDER") != "1" {
 		return
@@ -41,7 +61,9 @@ func TestResourceProviderChild(t *testing.T) {
 	}
 	entity, key := keyFixture(t)
 	attachment := &pm.Attachment{ID: "large", Name: "largest.bin", MIMEType: "application/octet-stream", Size: 25 * 1024 * 1024}
-	if _, err := attachment.GenerateKey([]*openpgp.Entity{entity}); err != nil { t.Fatal(err) }
+	if _, err := attachment.GenerateKey([]*openpgp.Entity{entity}); err != nil {
+		t.Fatal(err)
+	}
 	file, err := os.Create(filepath.Join(dir, "fixture-ciphertext"))
 	if err != nil {
 		t.Fatal(err)
@@ -145,18 +167,7 @@ func TestResourceProviderChild(t *testing.T) {
 			out["More"] = 0
 			cursor := strings.TrimPrefix(path, "/events/")
 			if cursor != current() {
-				id := "new"
-				action := 1
-				if phase.Load() == 2 || phase.Load() == 3 {
-					action = 2
-				}
-				if phase.Load() == 4 {
-					action = 0
-				}
-				if phase.Load() == 5 {
-					id = "large"
-				}
-				out["Messages"] = []map[string]any{{"ID": id, "Action": action}}
+				out["Messages"] = []map[string]any{resourceMessageEvent(phase.Load(), message)}
 			}
 		case path == "/messages":
 			rows := []*pm.Message{}
