@@ -10,7 +10,7 @@ export function validateRollout({ backup, acceptance, target, source, image, now
   if (!Number.isFinite(age) || age < 0 || age > 3600000) fail('BACKUP_STALE');
   for (const name of backupParts) if (!/^[a-f0-9]{64}$/.test(backup.artifacts?.[name]?.sha256 || '') || !(backup.artifacts[name].bytes > 0)) fail('BACKUP_INCOMPLETE');
   if (acceptance?.kind !== 'acceptance' || acceptance.target !== target || acceptance.source !== source || acceptance.image !== image || acceptance.passed !== true) fail('ACCEPTANCE_MISMATCH');
-  if (acceptance.memoryMax !== 335544320 || acceptance.swapMax !== 0 || acceptance.accounts !== 50 || acceptance.historicalRowsPerAccount < 10000 || acceptance.nodeBridgePassed !== 6 || acceptance.securitySkipped !== 0 || acceptance.oomKills !== 0 || acceptance.restarts !== 0) fail('RUNTIME_GATE_FAILED');
+  if (acceptance.memoryMax !== 335544320 || acceptance.swapMax !== 0 || acceptance.accounts !== 50 || !Number.isSafeInteger(acceptance.historicalRowsPerAccount) || acceptance.historicalRowsPerAccount < 10000 || acceptance.nodeBridgePassed !== 6 || acceptance.securitySkipped !== 0 || acceptance.oomKills !== 0 || acceptance.restarts !== 0) fail('RUNTIME_GATE_FAILED');
   for (const name of gates) if (!acceptance.gates?.includes(name)) fail('ACCEPTANCE_INCOMPLETE');
   return true;
 }

@@ -1,7 +1,7 @@
 // Controller/operator entry point. No implicit remote connection or shell eval.
 // All private paths are outside the checkout; command output is never logged.
 import { execFileSync } from 'node:child_process';
-import { constants, readFileSync, writeFileSync, mkdirSync, lstatSync, realpathSync, copyFileSync, renameSync, openSync, closeSync, fsyncSync, existsSync, chmodSync } from 'node:fs';
+import { constants, readFileSync, writeFileSync, mkdirSync, lstatSync, realpathSync, copyFileSync, renameSync, openSync, closeSync, fsyncSync, existsSync, chmodSync, unlinkSync } from 'node:fs';
 import { dirname, resolve, sep, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { backupParts, validateRollout, caddyAddition, sha256 } from './gates.mjs';
@@ -43,7 +43,15 @@ export function planRollout(config){
 }
 const docker=(args,options)=>run('docker',args,options);
 function compose(config,args){return docker(['compose','--project-name','cloud-mail-'+config.target,'--env-file',join(config.privateRoot,'release.env'),'-f',resolve(import.meta.dirname,'compose.yaml'),...args])}
-export function rollout(config,{apply=false}={}){
+function withCaddyLock(path,task){
+ const lock=privatePath(path)+'.cloud-mail.lock';let fd;
+ try{fd=openSync(lock,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|(constants.O_NOFOLLOW||0),0o600)}catch{code('CADDY_LOCKED')}
+ try{return task()}finally{closeSync(fd);unlinkSync(lock)}
+}
+export function rollout(config,options={}){
+ return options.apply?withCaddyLock(config.caddyPath,()=>rolloutUnlocked(config,options)):rolloutUnlocked(config,options);
+}
+function rolloutUnlocked(config,{apply=false}={}){
  const plan=planRollout(config);if(!apply)return {dryRun:true,target:plan.target,source:plan.source,image:plan.image,caddyBefore:sha256(plan.caddy),caddyAfter:plan.candidateSha256};
  privatePath(plan.root,{secure:true});if(!/^[a-z0-9-]+$/.test(config.caddyContainer||''))code('INVALID_CADDY_CONTAINER');
  // Runtime data is operator-provisioned with a filesystem/project quota; never
@@ -67,24 +75,33 @@ export function rollout(config,{apply=false}={}){
  durable(join(plan.root,'applied.json'),JSON.stringify({image:plan.image,appliedAt:new Date().toISOString()},null,2));
  return {applied:true,image:plan.image,caddyAfter:plan.candidateSha256};
 }
-export function rollback(config,{apply=false}={}){
- const root=privatePath(config.privateRoot,{secure:process.platform!=='win32'});const receipt=json(join(root,'rollout.json'));
+export function rollback(config,options={}){
+ return options.apply?withCaddyLock(config.caddyPath,()=>rollbackUnlocked(config,options)):rollbackUnlocked(config,options);
+}
+function rollbackUnlocked(config,{apply=false,runCommand=run,checkPrivate=privatePath}={}){
+ // Explicit library dependencies permit synthetic command-boundary tests. CLI
+ // always uses the real owner/path checks and executable runner; no env bypass.
+ const command=args=>runCommand('docker',args);
+ const rollbackCompose=args=>command(['compose','--project-name','cloud-mail-'+config.target,'--env-file',join(config.privateRoot,'release.env'),'-f',resolve(import.meta.dirname,'compose.yaml'),...args]);
+ const root=checkPrivate(config.privateRoot,{secure:process.platform!=='win32'});const receipt=json(join(root,'rollout.json'));
  if(receipt.target!==config.target||receipt.image!==config.currentImage||!(receipt.previousImage==='absent'||/^ghcr\.io\/[a-z0-9./_-]+@sha256:[a-f0-9]{64}$/.test(receipt.previousImage)))code('ROLLBACK_UNIT_MISMATCH');
  const current=readFileSync(privatePath(config.caddyPath));if(![receipt.caddyBefore,receipt.caddyAfter].includes(sha256(current)))code('CADDY_CHANGED_AFTER_ROLLOUT');
  const old=readFileSync(join(root,'Caddyfile.previous'));if(sha256(old)!==receipt.caddyBefore)code('ROLLBACK_CONFIG_HASH_MISMATCH');
  if(!apply)return {dryRun:true,previousImage:receipt.previousImage,preserveData:true,schemaBackMigration:false};
- privatePath(root,{secure:true});
+ checkPrivate(root,{secure:true});
  if(receipt.previousImage==='absent'){
-  compose(config,['stop','mail-sync']);
+  rollbackCompose(['stop','mail-sync']);
  }else{
  // Probe SQLite with the current image, read-only. Never restore a backup DB
  // over live mail or run an older schema migration against newer data.
- docker(['run','--rm','--network','none','--read-only','--user','10001:10001','--entrypoint','node','-v',join(root,'data')+':/data:ro',receipt.image,'-e','const{DatabaseSync}=require("node:sqlite");const d=new DatabaseSync("/data/mail.sqlite",{readOnly:true});if(d.prepare("PRAGMA user_version").get().user_version!==1)process.exit(1);d.close()']);
+ command(['run','--rm','--network','none','--read-only','--user','10001:10001','--entrypoint','node','-v',join(root,'data')+':/data:ro',receipt.image,'-e','const{DatabaseSync}=require("node:sqlite");const d=new DatabaseSync("/data/mail.sqlite",{readOnly:true});if(d.prepare("PRAGMA user_version").get().user_version!==1)process.exit(1);d.close()']);
  const env=join(root,'release.env');renameSync(env,join(root,'release.env.before-rollback'));durable(env,`MAIL_SYNC_IMAGE=${receipt.previousImage}\nPRIVATE_ROOT=${root}\n`);
- compose(config,['up','-d','--no-build','--wait','mail-sync']);
+ rollbackCompose(['up','-d','--no-build','--wait','mail-sync']);
  }
- docker(['cp',join(root,'Caddyfile.previous'),`${config.caddyContainer}:/tmp/cloud-mail-rollback.caddy`]);docker(['exec',config.caddyContainer,'caddy','validate','--config','/tmp/cloud-mail-rollback.caddy','--adapter','caddyfile']);
- const temp=config.caddyPath+'.cloud-mail-rollback';durable(temp,old,lstatSync(config.caddyPath).mode&0o777);renameSync(temp,config.caddyPath);docker(['exec',config.caddyContainer,'caddy','reload','--config','/tmp/cloud-mail-rollback.caddy','--adapter','caddyfile']);
+ command(['cp',join(root,'Caddyfile.previous'),`${config.caddyContainer}:/tmp/cloud-mail-rollback.caddy`]);command(['exec',config.caddyContainer,'caddy','validate','--config','/tmp/cloud-mail-rollback.caddy','--adapter','caddyfile']);
+ const temp=config.caddyPath+'.cloud-mail-rollback';durable(temp,old,lstatSync(config.caddyPath).mode&0o777);
+ if(sha256(readFileSync(config.caddyPath))!==sha256(current)){unlinkSync(temp);code('CADDY_CHANGED_BEFORE_RENAME')}
+ renameSync(temp,config.caddyPath);command(['exec',config.caddyContainer,'caddy','reload','--config','/tmp/cloud-mail-rollback.caddy','--adapter','caddyfile']);
  return {rolledBack:true,image:receipt.previousImage,preserveData:true};
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){

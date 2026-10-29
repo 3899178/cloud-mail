@@ -60,25 +60,28 @@ test "$(docker inspect "$unit" --format '{{.State.OOMKilled}} {{.RestartCount}}'
 export MAIL_SYNC_MASTER_KEY MAIL_SYNC_GATEWAY_KEY
 MAIL_SYNC_MASTER_KEY=$(openssl rand -hex 32)
 MAIL_SYNC_GATEWAY_KEY=$(openssl rand -hex 32)
-docker run -d --name "$smoke" "${common[@]}" --restart on-failure:3 --network-alias cloud-mail-sync -v "$RUNNER_TEMP/smoke-data:/data" -e MAIL_SYNC_MASTER_KEY -e MAIL_SYNC_GATEWAY_KEY -e MAIL_SYNC_PRIVATE_CONTAINER=1 cloud-mail:runtime >/dev/null
+docker run -d --name "$smoke" "${common[@]}" --restart on-failure:3 --network-alias cloud-mail-sync -v "$RUNNER_TEMP/smoke-data:/data" -v "$RUNNER_TEMP/evidence:/evidence" -v "$ROOT/deploy/fixtures:/app/deploy/fixtures:ro" -e MAIL_SYNC_MASTER_KEY -e MAIL_SYNC_GATEWAY_KEY -e MAIL_SYNC_PRIVATE_CONTAINER=1 cloud-mail:runtime >/dev/null
 for attempt in $(seq 1 30); do
   if docker exec "$smoke" /usr/local/bin/supervisor health; then break; fi
   test "$attempt" -lt 30
   sleep 1
 done
 docker run --rm --network "$network" --entrypoint node cloud-mail:test -e 'const r=await fetch("http://cloud-mail-sync:3211/v1/accounts");if(r.status!==401)process.exit(1);console.log("PRIVATE_GATEWAY_401")'
+docker exec "$smoke" node /app/deploy/fixtures/lifecycle.mjs seed
 docker exec "$smoke" /bin/sh -ec 'for f in /proc/[0-9]*/comm; do read -r name < "$f" || continue; if [ "$name" = proton-helper ]; then pid=${f#/proc/}; pid=${pid%/comm}; kill -KILL "$pid"; exit; fi; done; exit 1'
 for attempt in $(seq 1 30); do
   if test "$(docker inspect "$smoke" --format '{{.RestartCount}}')" = 1 && docker exec "$smoke" /usr/local/bin/supervisor health; then break; fi
   test "$attempt" -lt 30
   sleep 1
 done
-before=$(sha256sum "$RUNNER_TEMP/smoke-data/mail.sqlite" | cut -d' ' -f1)
+docker exec "$smoke" node /app/deploy/fixtures/lifecycle.mjs verify
 docker stop --time 25 "$smoke" >/dev/null
 test -s "$RUNNER_TEMP/smoke-data/mail.sqlite"
 docker start "$smoke" >/dev/null
 sleep 2
 docker exec "$smoke" /usr/local/bin/supervisor health
+docker exec "$smoke" node /app/deploy/fixtures/lifecycle.mjs verify
 docker stop --time 25 "$smoke" >/dev/null
+docker run --rm --network none --read-only --user 10001:10001 --entrypoint node -v "$RUNNER_TEMP/smoke-data:/data" -v "$RUNNER_TEMP/evidence:/evidence:ro" -v "$ROOT/deploy/fixtures:/app/deploy/fixtures:ro" -e MAIL_SYNC_MASTER_KEY cloud-mail:runtime /app/deploy/fixtures/lifecycle.mjs verify
 "$NODE" -e 'const {DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(process.argv[1]);if(db.prepare("PRAGMA integrity_check").get().integrity_check!=="ok")process.exit(1);db.close();console.log("STOP_RESTART_SQLITE_INTEGRITY_OK")' "$RUNNER_TEMP/smoke-data/mail.sqlite"
 docker image inspect cloud-mail:runtime --format 'candidate-image-id={{.Id}}'

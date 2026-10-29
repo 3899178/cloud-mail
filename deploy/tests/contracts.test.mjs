@@ -43,6 +43,11 @@ test('rollout gate requires fresh matching private evidence, exact image and no 
   const acceptance = { kind: 'acceptance', target: 'preview', source: sha, image, passed: true, memoryMax: 335544320, swapMax: 0, historicalRowsPerAccount: 10000, accounts: 50, nodeBridgePassed: 6, securitySkipped: 0, oomKills: 0, restarts: 0, gates: ['linux-image','private-process','resource','rollback','legacy','tenant','providers','proxy-redaction','other-apps'] };
   const input = { backup, acceptance, target: 'preview', source: sha, image, now };
   assert.equal(validateRollout(input), true);
+  assert.equal(validateRollout({...input,acceptance:{...acceptance,historicalRowsPerAccount:20000}}),true);
+  for (const value of [undefined,null,NaN,Infinity,-Infinity,'10000','not measured',10000.5,Number.MAX_SAFE_INTEGER+1]) {
+    const candidate={...acceptance,historicalRowsPerAccount:value};if(value===undefined)delete candidate.historicalRowsPerAccount;
+    assert.throws(()=>validateRollout({...input,acceptance:candidate}),/RUNTIME_GATE_FAILED/,String(value));
+  }
   for (const field of ['d1-full-sql', 'worker-assets', 'kv-data', 'caddy']) { const b = structuredClone(backup); delete b.artifacts[field]; assert.throws(() => validateRollout({ ...input, backup: b })); }
   for (const delta of [{ memoryMax: 400000000 }, { accounts: 49 }, { securitySkipped: 1 }, { nodeBridgePassed: 0 }, { passed: false }, { image: image + 'x' }, { historicalRowsPerAccount: 0 }, { gates: [] }]) assert.throws(() => validateRollout({ ...input, acceptance: { ...acceptance, ...delta } }));
   assert.throws(() => validateRollout({ ...input, now: now + 3600001 }), /STALE/);
