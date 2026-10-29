@@ -6,6 +6,8 @@ This service adds isolated external-mail storage. It does not change Cloud Mail'
 
 Node **24.18.0+**, built-in `node:sqlite`, Hono 4.13.14 and `@hono/node-server` 1.19.17. Run `npm ci` and `npm test` inside `services/mail-sync`. `npm start` binds **127.0.0.1:3211** by default. `PORT` changes the port. `MAIL_SYNC_DATA_DIR` defaults to `.data` and contains `mail.sqlite` and `attachments/`.
 
+Container opt-in `MAIL_SYNC_PRIVATE_CONTAINER=1` binds `0.0.0.0` for the existing private Caddy network; any other set value is rejected. This does not relax gateway assertions. `deploy/compose.yaml` publishes no host port and runs Node/helper/supervisor under one320MiB/no-swap cgroup. Follow `deploy/README.md` for image, socket, backup and whole-unit rollback gates; Windows or compilation-only evidence does not satisfy Linux runtime acceptance.
+
 `MAIL_SYNC_MASTER_KEY` and `MAIL_SYNC_GATEWAY_KEY` are separate 32-byte keys encoded as 64 hex characters, supplied through private deployment configuration. No default keys exist. Never publish these variables, provider credentials, device tokens, plaintext exports or database backups. Only the entry point reads environment configuration. SIGINT/SIGTERM close the HTTP listener and SQLite store. Deployment must supply the approved aggregate 320 MiB limit; Task 1 does **not** validate 50 live connections or the final memory envelope.
 
 ## Pure shared module

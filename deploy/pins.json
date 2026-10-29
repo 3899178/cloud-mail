@@ -1,0 +1,20 @@
+{
+  "platform": "linux/amd64",
+  "node": {
+    "version": "24.18.0",
+    "image": "node:24.18.0-bookworm-slim@sha256:d45d78e7929b46875bbd4e29bea672d5bc48186c6c3588306521c815e78352d6",
+    "source": "https://hub.docker.com/v2/repositories/library/node/tags/24.18.0-bookworm-slim"
+  },
+  "go": {
+    "version": "1.27.3",
+    "image": "golang:1.27.3-bookworm@sha256:e482b31b5d30c31f9e495f4b8cbdf41429b2d74955dfbcd9c0a904483d738390",
+    "source": "https://hub.docker.com/v2/repositories/library/golang/tags/1.27.3-bookworm"
+  },
+  "checkout": {
+    "version": "v4.2.2",
+    "commit": "11bd71901bbe5b1630ceea73d27597364c9af683",
+    "source": "https://github.com/actions/checkout/tree/v4.2.2"
+  },
+  "observedAt": "2026-10-29",
+  "note": "Public Docker Hub API amd64 manifests and git ls-remote tag verified. Registry index digests differ from the pinned amd64 digests. Docker engine/Compose supplied by ubuntu-24.04 runner are recorded, not claimed reproducible pins. Runtime has no package download/build."
+}

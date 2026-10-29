@@ -97,7 +97,7 @@ func TestEventActionActualJSONAndNodePersistence(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, node, "--test", filepath.Join("..", "mail-sync", "tests", "protocol", "proton-action-persistence.mjs"))
+	cmd := exec.CommandContext(ctx, node, "--test", "--test-reporter=tap", filepath.Join("..", "mail-sync", "tests", "protocol", "proton-action-persistence.mjs"))
 	cmd.Env = append(os.Environ(), "CLOUD_MAIL_ACTION_FIXTURE="+string(payload))
 	output, err := cmd.CombinedOutput()
 	t.Logf("Node persistence bridge:\n%s", output)

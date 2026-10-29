@@ -1,0 +1,41 @@
+# Placeholder-only. PRIVATE_ROOT is an absolute owner-only directory outside git.
+services:
+  mail-sync:
+    image: ${MAIL_SYNC_IMAGE:?use immutable image@sha256 digest}
+    platform: linux/amd64
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 335544320
+    mem_reservation: 268435456
+    memswap_limit: 335544320
+    cpus: 1.0
+    pids_limit: 96
+    restart: on-failure:3
+    stop_grace_period: 25s
+    env_file: ${PRIVATE_ROOT:?private absolute directory required}/runtime.env
+    environment:
+      MAIL_SYNC_PRIVATE_CONTAINER: "1"
+      MAIL_SYNC_DATA_DIR: /data
+      PROTON_HELPER_SOCKET: /run/cloud-mail-proton/helper.sock
+      NODE_OPTIONS: --max-old-space-size=96
+      GOMEMLIMIT: 24MiB
+      GOGC: "50"
+    volumes:
+      - ${PRIVATE_ROOT}/data:/data
+    tmpfs:
+      - /run/cloud-mail-proton:rw,noexec,nosuid,nodev,size=1048576,mode=0700,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,nodev,size=8388608,mode=0700,uid=10001,gid=10001
+    networks:
+      proxy:
+        aliases: [cloud-mail-sync]
+    logging:
+      driver: local
+      options:
+        max-size: 1m
+        max-file: "2"
+networks:
+  proxy:
+    external: true
+    name: cliproxy_proxy

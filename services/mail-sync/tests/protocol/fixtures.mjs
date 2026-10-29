@@ -7,16 +7,18 @@ async function tlsFixture(t, handler) {
   certificate ||= generate([{ name: 'commonName', value: 'fixture.test' }], { keyType: 'ec', curve: 'P-256', algorithm: 'sha256', extensions: [{ name: 'basicConstraints', cA: true }, { name: 'subjectAltName', altNames: [{ type: 2, value: 'fixture.test' }] }] });
   const pems = await certificate; const sockets = new Set();
   const server = createServer({ key: pems.private, cert: pems.cert }, socket => { sockets.add(socket); socket.on('error', () => {}); socket.on('close', () => sockets.delete(socket)); handler(socket); });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  await new Promise(resolve => server.listen(0, t.listenHost || '127.0.0.1', resolve));
   t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
   return { port: server.address().port, ca: pems.cert };
 }
 const quote = value => JSON.stringify(String(value));
 export const wireMime = (id, text = 'Original body') => Buffer.from(`Message-ID: <${id}@example.test>\r\nFrom: sender@example.test\r\nTo: user@example.test\r\nSubject: ${id}\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="wire"\r\n\r\n--wire\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}\r\n--wire\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="test.bin"\r\nContent-Transfer-Encoding: base64\r\n\r\nAAEC/w==\r\n--wire--\r\n`);
 export async function imapFixture(t) {
-  const state = { validity: '100', condstore: false, modseq: 1, metadataRows: 0, authFailure: false, folders: new Map([['INBOX', []], ['Archive', []], ['Rules', []], ['Junk', []], ['Trash', []], ['Sent', []], ['Drafts', []]]), commands: [], connections: 0 };
+  const state = { validity: '100', condstore: false, modseq: 1, metadataRows: 0, egressBytes: 0, metadataEgressBytes: 0, authFailure: false, folders: new Map([['INBOX', []], ['Archive', []], ['Rules', []], ['Junk', []], ['Trash', []], ['Sent', []], ['Drafts', []]]), commands: [], connections: 0 };
   const endpoint = await tlsFixture(t, socket => {
     state.connections++; let buffer = ''; let selected = 'INBOX';
+    const write = socket.write.bind(socket);
+    socket.write = (bytes, ...args) => { state.egressBytes += Buffer.byteLength(bytes); return write(bytes, ...args); };
     socket.write('* OK fixture ready\r\n');
     socket.on('data', data => {
       buffer += data.toString();
@@ -59,7 +61,7 @@ export async function imapFixture(t) {
             if (partial) {
               const start = Number(partial[1] || 0); const chunk = m.raw.subarray(start, start + Number(partial[2] || m.raw.length));
               socket.write(`* ${index + 1} FETCH (${parts.join(' ')} BODY[]<${start}> {${chunk.length}}\r\n`); socket.write(chunk); socket.write(')\r\n');
-            } else socket.write(`* ${index + 1} FETCH (${parts.join(' ')})\r\n`);
+            } else { const response = `* ${index + 1} FETCH (${parts.join(' ')})\r\n`; if (/ENVELOPE/i.test(line)) state.metadataEgressBytes += Buffer.byteLength(response); socket.write(response); }
           }
           ok();
         } else if (command === 'UID' && / STORE /i.test(line)) {

@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { resolve } from 'node:path';
 import { openStore } from './core/store.mjs';
 import { createSyncApp } from './app.mjs';
+import { listenHost } from './listener.mjs';
 
 // Only this entry point reads private deployment configuration. Never log its values.
 function key(name) {
@@ -22,6 +23,6 @@ for (const [provider, prefix] of [['gmail', 'GOOGLE'], ['outlook', 'MICROSOFT']]
 }
 const app = createSyncApp({ store, gatewayKey, clients, proton: { socketPath: process.env.PROTON_HELPER_SOCKET || '/run/cloud-mail-proton/helper.sock' } }); gatewayKey.fill(0);
 store.operations.recover();
-const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port });
+const server = serve({ fetch: app.fetch, hostname: listenHost(), port });
 app.services.start();
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { server.close(async () => { await app.services.close(); store.close(); process.exit(0); }); });

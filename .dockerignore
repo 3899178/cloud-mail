@@ -1,0 +1,2 @@
+# Fail closed for accidental repository-root builds. Use deploy/build-context.mjs.
+**

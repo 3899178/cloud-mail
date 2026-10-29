@@ -1,0 +1,47 @@
+name: Publish reviewed public service image
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  acceptance:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/mail-sync-linux.yml
+    permissions:
+      contents: read
+  publish:
+    needs: acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Protect this GitHub environment with owner approval. No production secrets.
+    environment: public-image-release
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build and push public immutable source image (never deploy)
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/mail-sync"
+          node_image='node:24.18.0-bookworm-slim@sha256:d45d78e7929b46875bbd4e29bea672d5bc48186c6c3588306521c815e78352d6'
+          id=$(docker create "$node_image")
+          docker cp "$id:/usr/local/bin/node" "$RUNNER_TEMP/node24"
+          docker rm "$id"
+          "$RUNNER_TEMP/node24" deploy/build-context.mjs "$RUNNER_TEMP/publish-context"
+          docker build --platform linux/amd64 --target runtime --label "org.opencontainers.image.revision=$SOURCE_SHA" -t "$image:$SOURCE_SHA" -f "$RUNNER_TEMP/publish-context/deploy/Dockerfile" "$RUNNER_TEMP/publish-context"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          docker push "$image:$SOURCE_SHA"
+          docker logout ghcr.io
+          docker image inspect "$image:$SOURCE_SHA" --format '{{json .RepoDigests}}'
+          # GHCR packages start private unless the owner configures visibility.
+          # An anonymous manifest fetch must succeed before publication is green.
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:${GITHUB_REPOSITORY,,}/mail-sync:pull" | jq -er .token)
+          curl -fsS -o /dev/null -H "Authorization: Bearer $token" -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' "https://ghcr.io/v2/${GITHUB_REPOSITORY,,}/mail-sync/manifests/$SOURCE_SHA"
