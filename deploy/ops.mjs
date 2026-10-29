@@ -1,7 +1,7 @@
 // Controller/operator entry point. No implicit remote connection or shell eval.
 // All private paths are outside the checkout; command output is never logged.
 import { execFileSync } from 'node:child_process';
-import { constants, readFileSync, writeFileSync, mkdirSync, lstatSync, realpathSync, copyFileSync, renameSync, openSync, closeSync, fsyncSync, existsSync, chmodSync, unlinkSync } from 'node:fs';
+import { constants, readFileSync, writeFileSync, mkdirSync, lstatSync, realpathSync, copyFileSync, renameSync, openSync, closeSync, fsyncSync, existsSync, chmodSync, unlinkSync, readdirSync } from 'node:fs';
 import { dirname, resolve, sep, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { backupParts, validateRollout, caddyAddition, sha256 } from './gates.mjs';
@@ -37,6 +37,10 @@ export function captureBackup(config){
 export function planRollout(config){
  const backup=json(config.backup);const acceptance=json(config.acceptance);validateRollout({backup,acceptance,target:config.target,source:config.source,image:config.image});
  verifyBackupFiles(backup,dirname(config.backup));const root=privatePath(config.privateRoot,{secure:process.platform!=='win32'});
+ if(acceptance.kind==='preview-bootstrap'){
+  const data=join(root,'data'),stat=lstatSync(data);
+  if(!stat.isDirectory()||stat.isSymbolicLink()||readdirSync(data).length)code('PREVIEW_BOOTSTRAP_DATA_NOT_EMPTY');
+ }
  const caddy=readFileSync(privatePath(config.caddyPath),'utf8');if(sha256(caddy)!==config.expectedCaddySha256)code('CADDY_CHANGED');
  const candidate=caddyAddition(caddy,config.hostname,'cloud-mail-sync:3211');
  return {backup,acceptance,root,caddy,candidate,candidateSha256:sha256(candidate),source:config.source,image:config.image,target:config.target};
