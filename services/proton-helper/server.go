@@ -80,12 +80,15 @@ func (h *helper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 110*time.Second)
 	defer cancel()
-	if r.URL.Path == "/rpc" {
-		// Control frames have exactly one JSON line and no ignored trailing bytes.
+	if r.URL.Path == "/rpc" || r.URL.Path == "/fetch" {
+		// Both frames contain exactly one JSON line. Reading through EOF also
+		// lets net/http monitor disconnects while upstream work is in flight.
 		if _, e := reader.ReadByte(); e != io.EOF {
 			respond(w, nil, errCapacity)
 			return
 		}
+	}
+	if r.URL.Path == "/rpc" {
 		switch cmd.Op {
 		case "auth.start":
 			v, e := h.start(ctx, cmd)
