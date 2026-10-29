@@ -14,10 +14,11 @@ import { createProtonTransport } from '../../services/mail-sync/src/providers/pr
 import { signGatewayAssertion } from '../../shared/unified-mail/index.mjs';
 import { operationRecorder, observeSession, safeCode, recordStage, processMemory } from './resource-diagnostics.mjs';
 import { quotaMime } from './resource-quota.mjs';
+import { validateMemoryEvidence } from './resource-memory.mjs';
 assert.equal(process.platform,'linux');assert.equal(process.getuid(),10001);
 const cg='/sys/fs/cgroup/';const text=f=>readFileSync(cg+f,'utf8').trim();
 const metrics=()=>Object.fromEntries(['memory.current','memory.peak','memory.max','memory.swap.max','memory.events','memory.stat','cpu.stat','io.stat'].map(f=>[f,text(f)]));
-assert.equal(text('memory.max'),'335544320');assert.equal(text('memory.swap.max'),'0');
+const initial=metrics();validateMemoryEvidence(initial);
 const provider=new URL(process.env.SYNTHETIC_PROVIDER_URL);assert.equal(provider.hostname,'provider-fixture');
 async function protonInfo(name='info'){const r=await fetch('https://mail.proton.me/control/'+name);assert.equal(r.status,200);return r.json()}
 async function info(){const imap=await (await fetch(provider+'info')).json();const proton=await protonInfo();return {...imap,requests:imap.requests+proton.requests,metadataRows:imap.metadataRows+proton.metadataRows,egressBytes:imap.egressBytes+proton.egressBytes,proton}}
@@ -30,6 +31,7 @@ let app;const registry=createProviderRegistry({store,adapters:{proton:options=>o
 app=createSyncApp({store,gatewayKey,registry,clock:()=>now});const server=serve({fetch:app.fetch,hostname:'0.0.0.0',port:3211});
 const helper=createProtonTransport({socketPath:process.env.PROTON_HELPER_SOCKET});
 const receipt={kind:'resource-fixture',passed:false,platform:process.platform,node:process.version,accounts:50,tenants:5,historicalRowsPerAccount:10000,protocolMix:{imap:49,proton:1},memoryMax:335544320,swapMax:0,parseConcurrency:1,reconnectConcurrency:2,stages:[],provider:'synthetic TLS IMAP + isolated TLS Proton API, exact production Node and Go binary including refresh/key unlock/PGP',remaining:['live-provider-consent','real-Caddy/Cloudflare-boundary','full-legacy-acceptance']};
+receipt.initial=initial;
 const pairs=[];
 for(let i=0;i<50;i++){const ownerId=`u${i%5}`,accountId=`a${i}`;pairs.push({ownerId,accountId});store.accounts.create(ownerId,{id:accountId,provider:i===49?'proton':'imap',address:`${accountId}@fixture.test`});if(i===49)store.credentials.set(ownerId,accountId,'proton',JSON.stringify({auth:{UID:'fixture',RefreshToken:'fixture',PasswordMode:1},mailboxPassword:'fixture-password',keySalts:{}}));else store.credentials.set(ownerId,accountId,'protocol',JSON.stringify({user:accountId,password:'synthetic-fixture-only',config:{imap:{host:'fixture.test',port:remote.port,secure:true},smtp:{host:'fixture.test',port:465,secure:true}}}));store.accounts.setStatus(ownerId,accountId,'active')}
 const directoryBytes=path=>readdirSync(path,{withFileTypes:true}).reduce((n,e)=>n+(e.isDirectory()?directoryBytes(`${path}/${e.name}`):statSync(`${path}/${e.name}`).size),0);
@@ -90,8 +92,12 @@ try{
  receipt.filesystemQuota={actualTmpfsBytes:2097152,status:full.status,errorCode:full.errorCode===null?null:safeCode({code:full.errorCode}),checkpointPreserved:JSON.stringify(checkpoint)===JSON.stringify(prior),remainingAttachmentBytes:directoryBytes('/limited/attachments')};
  console.log(JSON.stringify({phase:'filesystem-quota',...receipt.filesystemQuota}));
  assert.equal(full.status,'paused');assert.equal(full.errorCode,'STORAGE_FULL');assert.deepEqual(checkpoint,prior);assert.equal(receipt.filesystemQuota.remainingAttachmentBytes,0);quotaStore.close();
- receipt.final=metrics();assert(!/oom_kill [1-9]|oom [1-9]/.test(receipt.final['memory.events']));assert(Number(receipt.final['memory.peak'])<=335544320);receipt.softTargetExceeded=Number(receipt.final['memory.peak'])>268435456;receipt.diskBytes=directoryBytes('/data');receipt.passed=true;
+ receipt.diskBytes=directoryBytes('/data');receipt.passed=true;
 }finally{
- receipt.final=metrics();mkdirSync('/evidence',{recursive:true});writeFileSync('/evidence/resource.json',JSON.stringify(receipt,null,2));console.log(JSON.stringify({resourcePassed:receipt.passed,peak:receipt.final['memory.peak'],softTargetExceeded:receipt.softTargetExceeded,remaining:receipt.remaining}));
+ receipt.final=metrics();let memoryError;
+ try{receipt.memoryEvidence=validateMemoryEvidence(receipt.final);receipt.peakAboveConfiguredMax=receipt.memoryEvidence.peakAboveConfiguredMax;receipt.softTargetExceeded=receipt.memoryEvidence.softTargetExceeded}
+ catch(error){memoryError=error;receipt.passed=false;receipt.memoryEvidenceError='INVALID_MEMORY_EVIDENCE'}
+ mkdirSync('/evidence',{recursive:true});writeFileSync('/evidence/resource.json',JSON.stringify(receipt,null,2));console.log(JSON.stringify({resourcePassed:receipt.passed,memoryMax:receipt.final['memory.max'],peak:receipt.final['memory.peak'],peakAboveConfiguredMax:receipt.peakAboveConfiguredMax,softTargetExceeded:receipt.softTargetExceeded,remaining:receipt.remaining}));
  await new Promise(r=>server.close(r));await app.services.close();store.close();
+ if(memoryError)throw memoryError;
 }
