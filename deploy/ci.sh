@@ -50,15 +50,16 @@ done
 common=(--user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges --memory 335544320 --memory-reservation 268435456 --memory-swap 335544320 --cpus 1 --pids-limit 96 --network "$network" --tmpfs /run/cloud-mail-proton:rw,noexec,nosuid,nodev,size=1048576,mode=0700,uid=10001,gid=10001 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=8388608,mode=0700,uid=10001,gid=10001)
 docker create --name "$unit" "${common[@]}" --no-healthcheck --tmpfs /limited:rw,noexec,nosuid,nodev,size=2097152,mode=0700,uid=10001,gid=10001 -v "$RUNNER_TEMP/resource-data:/data" -v "$RUNNER_TEMP/evidence:/evidence" -v "$ROOT/deploy/fixtures:/app/deploy/fixtures:ro" -e SYNTHETIC_PROVIDER_URL=http://provider-fixture:8080/ -e SSL_CERT_FILE=/evidence/proton-ca.pem -e NODE_EXTRA_CA_CERTS=/evidence/proton-ca.pem cloud-mail:runtime --node-entry /app/deploy/fixtures/resource.mjs >/dev/null
 inspect_resource(){ docker inspect "$unit" --format '{"memory":{{.HostConfig.Memory}},"memorySwap":{{.HostConfig.MemorySwap}},"oomKilled":{{.State.OOMKilled}},"restarts":{{.RestartCount}},"exitCode":{{.State.ExitCode}}}'; }
-inspect_resource > "$RUNNER_TEMP/evidence/resource-container-before.json"
+# Host receipts stay outside evidence/, whose owner is container UID10001.
+inspect_resource > "$RUNNER_TEMP/resource-container-before.json"
 docker start "$unit" >/dev/null
 code=$(docker wait "$unit")
 docker logs "$unit"
 docker inspect "$unit" --format 'resource-exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarts={{.RestartCount}} memory={{.HostConfig.Memory}} memorySwap={{.HostConfig.MemorySwap}}'
-inspect_resource > "$RUNNER_TEMP/evidence/resource-container-after.json"
+inspect_resource > "$RUNNER_TEMP/resource-container-after.json"
 test "$code" = 0
 test "$(docker inspect "$unit" --format '{{.State.OOMKilled}} {{.RestartCount}}')" = 'false 0'
-"$NODE" deploy/fixtures/resource-memory.mjs "$RUNNER_TEMP/evidence/resource.json" "$RUNNER_TEMP/evidence/resource-container-before.json" "$RUNNER_TEMP/evidence/resource-container-after.json"
+"$NODE" deploy/fixtures/resource-memory.mjs "$RUNNER_TEMP/evidence/resource.json" "$RUNNER_TEMP/resource-container-before.json" "$RUNNER_TEMP/resource-container-after.json"
 # Normal entrypoint/auth + coordinated crash/restart + stop retains user state.
 export MAIL_SYNC_MASTER_KEY MAIL_SYNC_GATEWAY_KEY
 MAIL_SYNC_MASTER_KEY=$(openssl rand -hex 32)
