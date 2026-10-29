@@ -12,9 +12,10 @@ import { createProviderRegistry } from '../../services/mail-sync/src/providers/r
 import { createImapSession } from '../../services/mail-sync/src/providers/imap.mjs';
 import { createProtonTransport } from '../../services/mail-sync/src/providers/proton.mjs';
 import { signGatewayAssertion } from '../../shared/unified-mail/index.mjs';
+import { operationRecorder, observeSession, safeCode, recordStage, processMemory } from './resource-diagnostics.mjs';
 assert.equal(process.platform,'linux');assert.equal(process.getuid(),10001);
 const cg='/sys/fs/cgroup/';const text=f=>readFileSync(cg+f,'utf8').trim();
-const metrics=()=>Object.fromEntries(['memory.current','memory.peak','memory.max','memory.swap.max','memory.events','cpu.stat','io.stat'].map(f=>[f,text(f)]));
+const metrics=()=>Object.fromEntries(['memory.current','memory.peak','memory.max','memory.swap.max','memory.events','memory.stat','cpu.stat','io.stat'].map(f=>[f,text(f)]));
 assert.equal(text('memory.max'),'335544320');assert.equal(text('memory.swap.max'),'0');
 const provider=new URL(process.env.SYNTHETIC_PROVIDER_URL);assert.equal(provider.hostname,'provider-fixture');
 async function protonInfo(name='info'){const r=await fetch('https://mail.proton.me/control/'+name);assert.equal(r.status,200);return r.json()}
@@ -22,7 +23,9 @@ async function info(){const imap=await (await fetch(provider+'info')).json();con
 async function action(name){const r=await fetch(provider+name,{method:'POST'});assert.equal(r.status,200);await protonInfo(name)}
 const remote=await info();let now=Date.now();const masterKey=new Uint8Array(32).fill(17),gatewayKey=new Uint8Array(32).fill(23);
 const store=openStore({dbPath:'/data/mail.sqlite',dataDir:'/data/attachments',masterKey,clock:()=>now});
-let app;const registry=createProviderRegistry({store,adapters:{proton:options=>app.services.proton.adapter(options)},sessionFactory:o=>createImapSession({...o,clock:()=>now,tlsOptions:{ca:remote.ca},endpointResolver:async()=>({host:provider.hostname,port:remote.port,servername:'fixture.test'})})});
+const operations=operationRecorder();
+async function observedOpen(kind,account,open){try{return observeSession(await open(),kind,account,operations)}catch(error){operations.failure(kind,account,'open',error);throw error}}
+let app;const registry=createProviderRegistry({store,adapters:{proton:options=>observedOpen('proton',options.account.id,()=>app.services.proton.adapter(options))},sessionFactory:o=>observedOpen('imap',o.account.id,()=>createImapSession({...o,clock:()=>now,tlsOptions:{ca:remote.ca},endpointResolver:async()=>({host:provider.hostname,port:remote.port,servername:'fixture.test'})}))});
 app=createSyncApp({store,gatewayKey,registry,clock:()=>now});const server=serve({fetch:app.fetch,hostname:'0.0.0.0',port:3211});
 const helper=createProtonTransport({socketPath:process.env.PROTON_HELPER_SOCKET});
 const receipt={kind:'resource-fixture',passed:false,platform:process.platform,node:process.version,accounts:50,tenants:5,historicalRowsPerAccount:10000,protocolMix:{imap:49,proton:1},memoryMax:335544320,swapMax:0,parseConcurrency:1,reconnectConcurrency:2,stages:[],provider:'synthetic TLS IMAP + isolated TLS Proton API, exact production Node and Go binary including refresh/key unlock/PGP',remaining:['live-provider-consent','real-Caddy/Cloudflare-boundary','full-legacy-acceptance']};
@@ -35,9 +38,11 @@ async function cycle(phase,one=false){
  now+=30001;const before=await info();cycleBegin=performance.now();latencies=[];
  if(one)await app.services.engine.syncAccount(pairs[0]);else await app.services.scheduler.tick();
  const after=await info();const stage={phase,wallMs:Math.round(performance.now()-cycleBegin),cgroup:metrics(),diskBytes:directoryBytes('/data'),requests:after.requests-before.requests,metadataRows:after.metadataRows-before.metadataRows,metadataEgressBytes:after.metadataEgressBytes-before.metadataEgressBytes,egressBytes:after.egressBytes-before.egressBytes,proton:after.proton,reconnects:after.connections-before.connections,latencies};
- for(const p of (one?[pairs[0]]:pairs))assert.equal(store.accounts.get(p.ownerId,p.accountId).status,'active');
+ stage.accounts=(one?[pairs[0]]:pairs).map(p=>{const a=store.accounts.get(p.ownerId,p.accountId);return {account:p.accountId,provider:a.provider,status:a.status,errorCode:a.errorCode===null?null:safeCode({code:a.errorCode})}});
+ stage.memory=processMemory();stage.operationFailures=operations.snapshot();
+ recordStage(receipt,stage);
  await helper.rpc({op:'cancel',owner:'fixture-health',account:'health'});
- receipt.stages.push(stage);console.log(JSON.stringify(stage));return stage;
+ return stage;
 }
 async function request(path,{ownerId='u0',method='GET',body,headers={}}={}){
  const assertionBody=method==='PUT'?'':body||'';
