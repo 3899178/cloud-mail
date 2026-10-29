@@ -157,7 +157,7 @@ func (h *helper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "validate":
 		event, e := s.api.GetEvent(cmd.Cursor)
 		err = e
-		value = map[string]bool{"valid": e == nil && event != nil && event.ID == cmd.Cursor && len(event.Messages) == 0 && event.Refresh == 0 && cmd.Cursor != ""}
+		value = map[string]bool{"valid": e == nil && event != nil && event.ID == cmd.Cursor && len(event.Messages) == 0 && len(event.Labels) == 0 && event.More != nil && *event.More == 0 && event.Refresh == 0 && cmd.Cursor != ""}
 	case "flags":
 		if required(cmd.ID, 512) != nil {
 			err = errSync

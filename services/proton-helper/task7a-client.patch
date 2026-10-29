@@ -1,0 +1,27 @@
+diff --git a/services/proton-helper/third_party/hydroxide/protonmail/events.go b/services/proton-helper/third_party/hydroxide/protonmail/events.go
+index 562b31f..c45a149 100644
+--- a/services/proton-helper/third_party/hydroxide/protonmail/events.go
++++ b/services/proton-helper/third_party/hydroxide/protonmail/events.go
+@@ -14,6 +14,8 @@ const (
+ 
+ type Event struct {
+ 	ID       string `json:"EventID"`
++	More     *int
++	Labels   []json.RawMessage
+ 	Refresh  EventRefresh
+ 	Messages []*EventMessage
+ 	Contacts []*EventContact
+diff --git a/services/proton-helper/third_party/hydroxide/protonmail/messages.go b/services/proton-helper/third_party/hydroxide/protonmail/messages.go
+index ea98b8a..3d3972a 100644
+--- a/services/proton-helper/third_party/hydroxide/protonmail/messages.go
++++ b/services/proton-helper/third_party/hydroxide/protonmail/messages.go
+@@ -168,6 +168,9 @@ type MessageFilter struct {
+ 
+ func (c *Client) ListMessages(filter *MessageFilter) (total int, messages []*Message, err error) {
+ 	v := url.Values{}
++	for _, id := range filter.ID {
++		v.Add("IDs[]", id)
++	}
+ 	if filter.Page != 0 {
+ 		v.Set("Page", strconv.Itoa(filter.Page))
+ 	}

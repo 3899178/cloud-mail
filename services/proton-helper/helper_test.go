@@ -22,7 +22,8 @@ func (f *fixtureAPI) GetEvent(cursor string) (*pm.Event, error) {
 	if f.sourceErr {
 		return nil, errors.New("SECRET provider error")
 	}
-	return &pm.Event{ID: f.cursor, Refresh: map[bool]pm.EventRefresh{true: pm.EventRefreshMail}[f.reset]}, nil
+	more := 0
+	return &pm.Event{ID: f.cursor, More: &more, Refresh: map[bool]pm.EventRefresh{true: pm.EventRefreshMail}[f.reset]}, nil
 }
 func (f *fixtureAPI) ListMessages(filter *pm.MessageFilter) (int, []*pm.Message, error) {
 	if f.sourceErr {
@@ -69,7 +70,7 @@ func TestSnapshotRecoveryStableBoundaryAndFlags(t *testing.T) {
 	}
 	f.reset = false
 	again, err := s.snapshot(context.Background(), "0", got.Cursor, 10000)
-	if err != nil || again.Messages[0].ID != got.Messages[0].ID {
+	if err != nil || !again.Incremental || len(again.Messages) != 0 || again.Cursor != got.Cursor {
 		t.Fatal("unstable resync")
 	}
 	if err = s.flags("stable-message", true); err != nil || f.read != "unread:stable-message" {

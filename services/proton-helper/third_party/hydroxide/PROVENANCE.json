@@ -52,8 +52,8 @@
     {
       "path": "protonmail/events.go",
       "originalSha256": "ce46c1e724ac40baf29f4e515fe64f2535a7b8eae854643887bfa44089d1b9ca",
-      "productSha256": "ce46c1e724ac40baf29f4e515fe64f2535a7b8eae854643887bfa44089d1b9ca",
-      "patched": false
+      "productSha256": "651a630daa92f369d323a42c4d38f63e0b9d5412a8a606908876dff93d65e8cf",
+      "patched": true
     },
     {
       "path": "protonmail/import.go",
@@ -76,7 +76,7 @@
     {
       "path": "protonmail/messages.go",
       "originalSha256": "8cc065be789b0282a301dcf77911edd236cbc89e6e6cc1abdf307d7e455355d4",
-      "productSha256": "d88dad989b8431501680ad12aa7e8661841d315d48a997d77105085c4ace88ac",
+      "productSha256": "bd64c30e866cb2fafea31e29d5726cde129a1ee13306f042eac05fb02221d77e",
       "patched": true
     },
     {
@@ -129,7 +129,12 @@
     },
     {
       "path": "protonmail/messages.go",
-      "reason": "Require successful nested batch mutation responses with exact ID coverage"
+      "reason": "Require successful nested batch mutation responses with exact ID coverage; Task7a: serialize existing ID filter as IDs[] for bounded exact-ID metadata reads"
+    },
+    {
+      "path": "protonmail/events.go",
+      "reason": "Task7a: expose presence-aware More and raw Labels to reject incomplete event chains and force safe label-definition recovery",
+      "diff": "../../task7a-client.patch"
     }
   ],
   "localAdditions": [

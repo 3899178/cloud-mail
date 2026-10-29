@@ -27,9 +27,20 @@ export function openStore({ dbPath, dataDir, masterKey, clock = Date.now }) {
     db.exec(schema);
     if (process.platform !== 'win32') chmodSync(dbPath, 0o600);
   } catch (e) { db.close(); vault.close(); throw e; }
-  const run = (sql, ...args) => db.prepare(sql).run(...args);
-  const get = (sql, ...args) => db.prepare(sql).get(...args);
-  const all = (sql, ...args) => db.prepare(sql).all(...args);
+  // Store-owned, bounded SQL-only LRU. No iterator escapes: run/get/all reset the
+  // native statement before reuse, including failures; bindings are supplied anew.
+  const statements = new Map();
+  function prepared(sql) {
+    let statement = statements.get(sql);
+    if (statement) statements.delete(sql);
+    else statement = db.prepare(sql);
+    statements.set(sql, statement);
+    if (statements.size > 128) statements.delete(statements.keys().next().value);
+    return statement;
+  }
+  const run = (sql, ...args) => prepared(sql).run(...args);
+  const get = (sql, ...args) => prepared(sql).get(...args);
+  const all = (sql, ...args) => prepared(sql).all(...args);
   const transaction = fn => {
     db.exec('BEGIN IMMEDIATE');
     try { const result = fn(); db.exec('COMMIT'); return result; }
@@ -174,7 +185,7 @@ export function openStore({ dbPath, dataDir, masterKey, clock = Date.now }) {
   };
   let attachments;
   try { attachments = createAttachments({ dataDir, run, all, get, messageRow }); }
-  catch (e) { db.close(); vault.close(); throw e; }
+  catch (e) { statements.clear(); db.close(); vault.close(); throw e; }
   let closed = false;
   const sources = createReconciliation({ run, all, get, transaction, accountRow, messageRow, attachments });
   const oauthStates = {
@@ -203,5 +214,5 @@ export function openStore({ dbPath, dataDir, masterKey, clock = Date.now }) {
       });
     },
   };
-  return { accounts, credentials, messages, checkpoints, operations, devices, assertions, attachments, sources, oauthStates, close() { if (!closed) { db.close(); vault.close(); closed = true; } } };
+  return { accounts, credentials, messages, checkpoints, operations, devices, assertions, attachments, sources, oauthStates, close() { if (!closed) { statements.clear(); db.close(); vault.close(); closed = true; } } };
 }

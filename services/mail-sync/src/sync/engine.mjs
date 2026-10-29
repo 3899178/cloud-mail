@@ -24,9 +24,11 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits(),
       if (folders.length > 200) fail('CAPACITY_EXCEEDED');
       if (!folders.length || new Set(folders.map(f => f.id)).size !== folders.length) fail('SYNC_FAILED');
       const snapshots = []; const current = []; let metadataBytes = 0;
+      const committed = store.sources.catalog(ownerId, accountId);
+      const previous = store.sources.identities(ownerId, accountId, committed);
       for (const folder of folders) {
         signal?.throwIfAborted();
-        const snapshot = await session.snapshot(folder.id, { checkpoint: store.checkpoints.get(ownerId, accountId, folder.id), baselineAt: account.createdAt, signal });
+        const snapshot = await session.snapshot(folder.id, { checkpoint: store.checkpoints.get(ownerId, accountId, folder.id), catalog: committed.filter(c => c.folder === folder.id), baselineAt: account.createdAt, signal });
         if (!Array.isArray(snapshot.messages)) fail('SYNC_FAILED');
         if (snapshot.messages.length + current.length > 20000) fail('CAPACITY_EXCEEDED');
         snapshots.push({ folder, snapshot });
@@ -35,7 +37,6 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits(),
         if (metadataBytes > 8 * 1024 * 1024) fail('CAPACITY_EXCEEDED');
       }
       if (new Set(current.map(location)).size !== current.length) fail('SYNC_FAILED');
-      const previous = store.sources.identities(ownerId, accountId);
       const currentLocations = new Set(current.map(location));
       const previousLocations = new Map(previous.map(c => [location(c), c]));
       const vanished = previous.filter(c => !currentLocations.has(location(c))); const used = new Set();
@@ -93,7 +94,7 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits(),
       const finalFolders = (await session.folders()).filter(f => normal.has(f.kind)).map(f => f.id).sort();
       if (JSON.stringify(finalFolders) !== JSON.stringify(folders.map(f => f.id).sort())) fail('SYNC_FAILED');
       lease.check();
-      store.sources.commit(ownerId, accountId, { catalog: current, expectedFolders: folders.map(f => f.id), checkpoints: snapshots.map(({ folder, snapshot }) => ({ folder: folder.id, cursor: String(snapshot.cursor), uidValidity: String(snapshot.uidValidity), baselineAt: account.createdAt })) });
+      store.sources.commit(ownerId, accountId, { catalog: current, expectedFolders: folders.map(f => f.id), checkpoints: snapshots.map(({ folder, snapshot }) => ({ folder: folder.id, cursor: String(snapshot.cursor), uidValidity: String(snapshot.uidValidity), baselineAt: account.createdAt, auditAt: snapshot.auditAt })) });
       for (const pending of store.sources.pendingSweeps(ownerId, accountId)) store.sources.prune(ownerId, accountId, pending);
       if (store.accounts.get(ownerId, accountId).status === 'paused') return store.accounts.get(ownerId, accountId);
       return store.accounts.setStatus(ownerId, accountId, 'active');

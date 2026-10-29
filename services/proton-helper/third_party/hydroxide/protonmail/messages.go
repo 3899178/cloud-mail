@@ -168,6 +168,9 @@ type MessageFilter struct {
 
 func (c *Client) ListMessages(filter *MessageFilter) (total int, messages []*Message, err error) {
 	v := url.Values{}
+	for _, id := range filter.ID {
+		v.Add("IDs[]", id)
+	}
 	if filter.Page != 0 {
 		v.Set("Page", strconv.Itoa(filter.Page))
 	}

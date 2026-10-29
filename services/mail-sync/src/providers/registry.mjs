@@ -2,9 +2,9 @@ import { fail } from '../../../../shared/unified-mail/index.mjs';
 import { createImapSession, mailConfig } from './imap.mjs';
 
 export function createProviderRegistry({ store, oauth, adapters = {}, onChange = () => {}, sessionFactory = createImapSession }) {
-  const sessions = new Map(); const tails = new Map();
+  const sessions = new Map(); const tails = new Map(); const idle = new Set();
   async function invalidate(ownerId, accountId) {
-    const key = JSON.stringify([ownerId, accountId]); const existing = sessions.get(key); sessions.delete(key); await existing?.close();
+    const key = JSON.stringify([ownerId, accountId]); const existing = sessions.get(key); sessions.delete(key); idle.delete(key); await existing?.close();
   }
   return {
     async open({ ownerId, account, signal }) {
@@ -12,6 +12,7 @@ export function createProviderRegistry({ store, oauth, adapters = {}, onChange =
       const previous = tails.get(key) || Promise.resolve(); let release;
       const gate = new Promise(resolve => { release = resolve; }); tails.set(key, gate);
       await previous;
+      idle.delete(key);
       let session;
       try {
         signal?.throwIfAborted();
@@ -36,11 +37,19 @@ export function createProviderRegistry({ store, oauth, adapters = {}, onChange =
       return { ...session, async close() {
         if (closed) return; closed = true;
         signal?.removeEventListener('abort', abort);
-        try { await session.idle?.(); } catch { await invalidate(ownerId, account.id); }
+        try {
+          await session.idle?.();
+          if (sessions.get(key) === session) idle.add(key);
+          // Only idle sessions can be evicted; never close another active lease.
+          while (idle.size > 2) {
+            const oldest = idle.values().next().value; idle.delete(oldest);
+            const old = sessions.get(oldest); sessions.delete(oldest); await old?.close();
+          }
+        } catch { await invalidate(ownerId, account.id); }
         finally { release(); if (tails.get(key) === gate) tails.delete(key); }
       } };
     },
     invalidate,
-    async close() { await Promise.all([...sessions.values()].map(s => s.close())); sessions.clear(); },
+    async close() { await Promise.all([...sessions.values()].map(s => s.close())); sessions.clear(); idle.clear(); },
   };
 }

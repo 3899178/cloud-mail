@@ -14,6 +14,7 @@ import (
 	"mime/multipart"
 	"net/mail"
 	"net/textproto"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +54,8 @@ type snapshot struct {
 	UIDValidity string   `json:"uidValidity"`
 	Cursor      string   `json:"cursor"`
 	Messages    []record `json:"messages"`
+	Incremental bool     `json:"incremental,omitempty"`
+	Removed     []string `json:"removed,omitempty"`
 }
 type folder struct {
 	ID   string `json:"id"`
@@ -116,13 +119,15 @@ func (s *mailSession) folders() ([]folder, error) {
 }
 func (s *mailSession) snapshot(ctx context.Context, label, cursor string, _ int64) (snapshot, error) {
 	result := snapshot{UIDValidity: "proton-message-id-v1", Messages: []record{}}
-	// Event expiry/reset is recovered by a complete bounded inventory, never by an IMAP UID.
+	// Only complete event chains authorize a delta. Reset/expiry falls back to a
+	// full snapshot whose cursor is still committed by Node with its catalog.
 	if cursor != "" {
-		if _, err := s.api.GetEvent(cursor); err != nil {
-			var api *pm.APIError
-			if !errors.As(err, &api) {
-				return result, err
-			}
+		delta, fallback, err := s.incremental(ctx, label, cursor)
+		if err != nil {
+			return result, err
+		}
+		if !fallback {
+			return delta, nil
 		}
 	}
 	event, err := s.api.GetEvent("")
@@ -176,6 +181,112 @@ func (s *mailSession) snapshot(ctx context.Context, label, cursor string, _ int6
 		}
 	}
 	return result, errCapacity
+}
+
+func (s *mailSession) incremental(ctx context.Context, label, cursor string) (snapshot, bool, error) {
+	result := snapshot{UIDValidity: "proton-message-id-v1", Messages: []record{}, Incremental: true}
+	changed := map[string]pm.EventAction{}
+	visited := map[string]bool{}
+	for page := 0; page < 201; page++ {
+		if err := ctx.Err(); err != nil {
+			return result, false, err
+		}
+		if visited[cursor] {
+			return result, false, errSync
+		}
+		visited[cursor] = true
+		event, err := s.api.GetEvent(cursor)
+		if err != nil {
+			var api *pm.APIError
+			// Only an explicitly expired event may authorize a fresh inventory.
+			if errors.As(err, &api) && api.Code == 18001 {
+				return result, true, nil
+			}
+			return result, false, err
+		}
+		if event == nil || required(event.ID, 8192) != nil || event.More == nil || *event.More < 0 || *event.More > 1 {
+			return result, false, errSync
+		}
+		if event.Refresh != 0 || len(event.Labels) != 0 {
+			return result, true, nil
+		}
+		for _, change := range event.Messages {
+			if change == nil || required(change.ID, 512) != nil || change.Action < pm.EventDelete || change.Action > pm.EventUpdateFlags {
+				return result, false, errSync
+			}
+			changed[change.ID] = change.Action
+			if len(changed) > 20000 {
+				return result, false, errCapacity
+			}
+		}
+		if *event.More == 0 {
+			result.Cursor = event.ID
+			break
+		}
+		if event.ID == cursor {
+			return result, false, errSync
+		}
+		cursor = event.ID
+	}
+	if result.Cursor == "" {
+		return result, false, errCapacity
+	}
+	ids := []string{}
+	for id, action := range changed {
+		result.Removed = append(result.Removed, id)
+		if action != pm.EventDelete {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	sort.Strings(result.Removed)
+	bytes := 0
+	for start := 0; start < len(ids); start += 100 {
+		if err := ctx.Err(); err != nil {
+			return result, false, err
+		}
+		end := start + 100
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		expected := map[string]bool{}
+		for _, id := range batch {
+			expected[id] = true
+		}
+		total, messages, err := s.api.ListMessages(&pm.MessageFilter{ID: batch, PageSize: 100})
+		if err != nil {
+			return result, false, err
+		}
+		if total != len(batch) || len(messages) != len(batch) {
+			return result, false, errSync
+		}
+		for _, m := range messages {
+			if m == nil || !expected[m.ID] {
+				return result, false, errSync
+			}
+			delete(expected, m.ID)
+			inFolder := false
+			for _, id := range m.LabelIDs {
+				if id == label {
+					inFolder = true
+				}
+			}
+			if !inFolder || !normalMessage(m) {
+				continue
+			}
+			at := int64(m.Time) * 1000
+			if at < 0 {
+				return result, false, errSync
+			}
+			bytes += len(m.ID)*3 + len(m.ExternalID) + 128
+			if bytes > 8*1024*1024 {
+				return result, false, errCapacity
+			}
+			result.Messages = append(result.Messages, record{ID: m.ID, StableID: m.ID, ReceivedAt: at, Unread: m.Unread != 0, MessageID: messageID(m.ExternalID), Fingerprint: m.ID})
+		}
+	}
+	return result, false, nil
 }
 func (s *mailSession) flags(id string, unread bool) error {
 	if unread {

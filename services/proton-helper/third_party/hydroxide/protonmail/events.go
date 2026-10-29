@@ -14,6 +14,8 @@ const (
 
 type Event struct {
 	ID       string `json:"EventID"`
+	More     *int
+	Labels   []json.RawMessage
 	Refresh  EventRefresh
 	Messages []*EventMessage
 	Contacts []*EventContact

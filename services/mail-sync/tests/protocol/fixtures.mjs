@@ -14,7 +14,7 @@ async function tlsFixture(t, handler) {
 const quote = value => JSON.stringify(String(value));
 export const wireMime = (id, text = 'Original body') => Buffer.from(`Message-ID: <${id}@example.test>\r\nFrom: sender@example.test\r\nTo: user@example.test\r\nSubject: ${id}\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="wire"\r\n\r\n--wire\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}\r\n--wire\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="test.bin"\r\nContent-Transfer-Encoding: base64\r\n\r\nAAEC/w==\r\n--wire--\r\n`);
 export async function imapFixture(t) {
-  const state = { validity: '100', authFailure: false, folders: new Map([['INBOX', []], ['Archive', []], ['Rules', []], ['Junk', []], ['Trash', []], ['Sent', []], ['Drafts', []]]), commands: [], connections: 0 };
+  const state = { validity: '100', condstore: false, modseq: 1, metadataRows: 0, authFailure: false, folders: new Map([['INBOX', []], ['Archive', []], ['Rules', []], ['Junk', []], ['Trash', []], ['Sent', []], ['Drafts', []]]), commands: [], connections: 0 };
   const endpoint = await tlsFixture(t, socket => {
     state.connections++; let buffer = ''; let selected = 'INBOX';
     socket.write('* OK fixture ready\r\n');
@@ -25,7 +25,8 @@ export async function imapFixture(t) {
         state.commands.push(line.replace(/LOGIN .*/, 'LOGIN [redacted]'));
         const [tag, rawCommand] = line.split(' '); const command = rawCommand?.toUpperCase();
         const ok = () => socket.write(`${tag} OK completed\r\n`);
-        if (command === 'CAPABILITY') { socket.write('* CAPABILITY IMAP4rev1 UIDPLUS MOVE\r\n'); ok(); }
+        if (command === 'CAPABILITY') { socket.write(`* CAPABILITY IMAP4rev1 UIDPLUS MOVE${state.condstore ? ' ENABLE CONDSTORE' : ''}\r\n`); ok(); }
+        else if (command === 'ENABLE') { socket.write('* ENABLED CONDSTORE\r\n'); ok(); }
         else if (command === 'LOGIN') socket.write(`${tag} ${state.authFailure ? 'NO [AUTHENTICATIONFAILED] rejected' : 'OK authenticated'}\r\n`);
         else if (command === 'LIST' || command === 'LSUB') {
           if (/LIST "" ""$/.test(line)) { socket.write('* LIST (\\Noselect) "/" ""\r\n'); ok(); continue; }
@@ -37,14 +38,23 @@ export async function imapFixture(t) {
         } else if (command === 'SELECT' || command === 'EXAMINE') {
           const match = line.match(/(?:SELECT|EXAMINE) ("(?:[^"\\]|\\.)*"|[^ ]+)/i); selected = match[1].startsWith('"') ? JSON.parse(match[1]) : match[1];
           const messages = state.folders.get(selected) || [];
+          if (state.condstore) socket.write(`* OK [HIGHESTMODSEQ ${state.modseq}] modseq\r\n`);
           socket.write(`* FLAGS (\\Seen \\Draft)\r\n* ${messages.length} EXISTS\r\n* OK [UIDVALIDITY ${state.validity}] validity\r\n* OK [UIDNEXT ${Math.max(0, ...messages.map(m => Number(m.uid))) + 1}] next\r\n${tag} OK [READ-WRITE] selected\r\n`);
+        } else if (command === 'UID' && / SEARCH /i.test(line)) {
+          socket.write(`* SEARCH ${(state.folders.get(selected) || []).filter(m => m.uid !== state.omitSearchUid).map(m => m.uid).join(' ')}\r\n`); ok();
         } else if (command === 'FETCH' || (command === 'UID' && / UID FETCH |^\S+ UID FETCH /i.test(line))) {
           const isUid = command === 'UID'; const range = line.split(' ')[isUid ? 3 : 2];
           const messages = state.folders.get(selected) || [];
           for (const [index, m] of messages.entries()) {
-            if (!range.includes(':') && Number(range) !== (isUid ? Number(m.uid) : index + 1)) continue;
+            if (m.uid === state.omitFetchUid || (m.uid === state.omitEnvelopeUid && /ENVELOPE/i.test(line))) continue;
+            const number = isUid ? Number(m.uid) : index + 1;
+            const max = isUid ? Math.max(0, ...messages.map(m => Number(m.uid))) : messages.length;
+            if (!range.split(',').some(part => { const [a, b = a] = part.split(':').map(v => v === '*' ? max : Number(v)); return number >= Math.min(a, b) && number <= Math.max(a, b); })) continue;
+            const since = line.match(/CHANGEDSINCE (\d+)/); if (since && (m.modseq || 1) <= Number(since[1])) continue;
+            if (/ENVELOPE/i.test(line)) state.metadataRows++;
             const flags = m.unread ? '' : '\\Seen';
-            const parts = [`UID ${m.uid}`, `FLAGS (${flags})`, `INTERNALDATE "27-Oct-2026 12:00:00 +0000"`, `RFC822.SIZE ${m.raw.length}`, `ENVELOPE (NIL ${quote(m.subject)} ((NIL NIL "sender" "example.test")) NIL NIL NIL NIL NIL NIL ${quote(`<${m.key}@example.test>`)})`];
+            const parts = [`UID ${m.uid}`, `FLAGS (${flags})`, `INTERNALDATE "${m.internalDate || '27-Oct-2026 12:00:00 +0000'}"`, `RFC822.SIZE ${m.raw.length}`, `ENVELOPE (NIL ${quote(m.subject)} ((NIL NIL "sender" "example.test")) NIL NIL NIL NIL NIL NIL ${quote(`<${m.key}@example.test>`)})`];
+            if (!/ENVELOPE/i.test(line)) parts.splice(2);
             const partial = line.match(/BODY\.PEEK\[\](?:<(\d+)\.(\d+)>)?/i);
             if (partial) {
               const start = Number(partial[1] || 0); const chunk = m.raw.subarray(start, start + Number(partial[2] || m.raw.length));

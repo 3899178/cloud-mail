@@ -10,8 +10,8 @@ export function createReconciliation({ run, all, get, transaction, accountRow, m
       accountRow(who, accountId);
       return all('SELECT value FROM source_catalog WHERE owner_id=? AND account_id=? ORDER BY location', who, accountId).map(r => JSON.parse(r.value));
     },
-    identities(who, accountId) {
-      const catalog = this.catalog(who, accountId);
+    identities(who, accountId, catalog = this.catalog(who, accountId)) {
+      accountRow(who, accountId);
       const partial = all('SELECT value FROM hydration_journal WHERE owner_id=? AND account_id=? ORDER BY source_id', who, accountId).map(r => JSON.parse(r.value));
       const committedIds = new Set(catalog.map(c => c.sourceId));
       return [...catalog, ...partial.filter(p => !committedIds.has(p.sourceId))];
@@ -51,14 +51,19 @@ export function createReconciliation({ run, all, get, transaction, accountRow, m
       const deleted = [...new Set(this.identities(who, accountId).filter(c => c.admitted && !present.has(c.sourceId)).map(c => refFor(accountId, c.sourceId)))];
       const sweepId = randomUUID();
       transaction(() => {
-        run('DELETE FROM source_catalog WHERE owner_id=? AND account_id=?', who, accountId);
+        const previous = new Map(all('SELECT location,value FROM source_catalog WHERE owner_id=? AND account_id=?', who, accountId).map(r => [r.location, r.value]));
         for (const c of clean) {
-          run('INSERT INTO source_catalog VALUES(?,?,?,?)', who, accountId, JSON.stringify([c.folder, c.uidValidity, c.remoteId]), JSON.stringify(c));
-          if (c.admitted) run('UPDATE messages SET unread=?,folder=? WHERE owner_id=? AND ref=?', Number(c.unread), c.folder, who, refFor(accountId, c.sourceId));
+          const location = JSON.stringify([c.folder, c.uidValidity, c.remoteId]); const value = JSON.stringify(c);
+          const changed = previous.get(location) !== value;
+          previous.delete(location);
+          if (changed) run('INSERT INTO source_catalog VALUES(?,?,?,?) ON CONFLICT(owner_id,account_id,location) DO UPDATE SET value=excluded.value', who, accountId, location, value);
+          if (c.admitted) run('UPDATE messages SET unread=?,folder=? WHERE owner_id=? AND ref=? AND (unread<>? OR folder<>?)', Number(c.unread), c.folder, who, refFor(accountId, c.sourceId), Number(c.unread), c.folder);
         }
+        for (const location of previous.keys()) run('DELETE FROM source_catalog WHERE owner_id=? AND account_id=? AND location=?', who, accountId, location);
         for (const c of checkpoints) {
           text(c.folder, 1024); text(c.cursor, 8192, true); text(c.uidValidity, 128); integer(c.baselineAt);
-          run('INSERT INTO checkpoints VALUES(?,?,?,?) ON CONFLICT(owner_id,account_id,folder) DO UPDATE SET value=excluded.value', who, accountId, c.folder, JSON.stringify({ cursor: c.cursor, uidValidity: c.uidValidity, baselineAt: c.baselineAt }));
+          if (c.auditAt !== undefined) integer(c.auditAt);
+          run('INSERT INTO checkpoints VALUES(?,?,?,?) ON CONFLICT(owner_id,account_id,folder) DO UPDATE SET value=excluded.value', who, accountId, c.folder, JSON.stringify({ cursor: c.cursor, uidValidity: c.uidValidity, baselineAt: c.baselineAt, ...(c.auditAt !== undefined ? { auditAt: c.auditAt } : {}) }));
         }
         run('INSERT INTO completed_sweeps VALUES(?,?,?,?)', who, accountId, sweepId, JSON.stringify(deleted));
         run('INSERT INTO sync_baselines VALUES(?,?,?) ON CONFLICT DO NOTHING', who, accountId, accountRow(who, accountId).created_at);

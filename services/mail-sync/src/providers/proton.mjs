@@ -86,7 +86,20 @@ export function createProton({ store, lifecycle, transport, clock = Date.now }) 
         return {
           usable: () => !closed && Number.isSafeInteger(opened.expiresAt) && clock() < opened.expiresAt,
           folders: async () => (await request('folders')).folders,
-          snapshot: (folder, { checkpoint, baselineAt }) => request('snapshot', { folder, cursor: checkpoint?.cursor || '', baselineAt }),
+          async snapshot(folder, { checkpoint, catalog = [], baselineAt }) {
+            const recent = Number.isSafeInteger(checkpoint?.auditAt) && checkpoint.auditAt <= clock() && clock() - checkpoint.auditAt < 300000;
+            const result = await request('snapshot', { folder, cursor: recent ? checkpoint.cursor : '', baselineAt });
+            if (!Array.isArray(result.messages) || typeof result.cursor !== 'string' || !result.cursor || result.cursor.length > 8192) fail('SYNC_FAILED');
+            if (!result.incremental) return { ...result, auditAt: clock() };
+            if (!recent || checkpoint.uidValidity !== result.uidValidity || !Array.isArray(result.removed || []) || (result.removed?.length || 0) > 20000) fail('SYNC_FAILED');
+            const merged = new Map(catalog.map(c => [c.remoteId, { id: c.remoteId, stableId: c.stableId, fingerprint: c.fingerprint, receivedAt: c.receivedAt, unread: c.unread, messageId: c.messageId }]));
+            for (const id of result.removed || []) { text(id, 512); merged.delete(id); }
+            const changed = new Set();
+            for (const m of result.messages) { text(m.id, 512); if (changed.has(m.id)) fail('SYNC_FAILED'); changed.add(m.id); merged.set(m.id, m); }
+            const messages = [...merged.values()];
+            if (messages.length > 20000 || Buffer.byteLength(JSON.stringify(messages)) > 8 * 1024 * 1024) fail('CAPACITY_EXCEEDED');
+            return { ...result, messages, auditAt: checkpoint.auditAt };
+          },
           validateSnapshot: async (folder, previous) => (await request('validate', { folder, cursor: previous.cursor })).valid === true,
           fetch(folder, message) {
             return new Promise((resolve, reject) => {
