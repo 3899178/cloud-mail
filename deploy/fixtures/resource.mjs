@@ -13,6 +13,7 @@ import { createImapSession } from '../../services/mail-sync/src/providers/imap.m
 import { createProtonTransport } from '../../services/mail-sync/src/providers/proton.mjs';
 import { signGatewayAssertion } from '../../shared/unified-mail/index.mjs';
 import { operationRecorder, observeSession, safeCode, recordStage, processMemory } from './resource-diagnostics.mjs';
+import { quotaMime } from './resource-quota.mjs';
 assert.equal(process.platform,'linux');assert.equal(process.getuid(),10001);
 const cg='/sys/fs/cgroup/';const text=f=>readFileSync(cg+f,'utf8').trim();
 const metrics=()=>Object.fromEntries(['memory.current','memory.peak','memory.max','memory.swap.max','memory.events','memory.stat','cpu.stat','io.stat'].map(f=>[f,text(f)]));
@@ -82,9 +83,13 @@ try{
  const {createSyncEngine}=await import('../../services/mail-sync/src/sync/engine.mjs');
  const quotaStore=openStore({dbPath:'/data/quota.sqlite',dataDir:'/limited/attachments',masterKey,clock:()=>now});
  quotaStore.accounts.create('quota',{id:'quota',provider:'imap',address:'quota@fixture.test'});let incoming=false;
- const quotaEngine=createSyncEngine({store:quotaStore,registry:{open:async()=>({folders:async()=>[{id:'INBOX',kind:'inbox'}],snapshot:async()=>({uidValidity:'q',cursor:incoming?'new':'base',messages:incoming?[{id:'1',receivedAt:now,unread:true}]:[]}),fetch:async()=>Readable.from(['Content-Type: multipart/mixed; boundary=q\r\n\r\n--q\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=quota.bin\r\nContent-Transfer-Encoding: base64\r\n\r\n',Buffer.alloc(3*1024*1024).toString('base64'),'\r\n--q--\r\n']),close:async()=>{}})}});
+ const quotaEngine=createSyncEngine({store:quotaStore,registry:{open:async()=>({folders:async()=>[{id:'INBOX',kind:'inbox'}],snapshot:async()=>({uidValidity:'q',cursor:incoming?'new':'base',messages:incoming?[{id:'1',receivedAt:now,unread:true}]:[]}),fetch:async()=>Readable.from(quotaMime()),close:async()=>{}})}});
  assert.equal((await quotaEngine.syncAccount({ownerId:'quota',accountId:'quota'})).status,'active');const prior=quotaStore.checkpoints.get('quota','quota','INBOX');incoming=true;
- const full=await quotaEngine.syncAccount({ownerId:'quota',accountId:'quota'});assert.equal(full.status,'paused');assert.equal(full.errorCode,'STORAGE_FULL');assert.deepEqual(quotaStore.checkpoints.get('quota','quota','INBOX'),prior);quotaStore.close();receipt.filesystemQuota={actualTmpfsBytes:2097152,status:full.status,errorCode:full.errorCode,checkpointPreserved:true};
+ const full=await quotaEngine.syncAccount({ownerId:'quota',accountId:'quota'});
+ const checkpoint=quotaStore.checkpoints.get('quota','quota','INBOX');
+ receipt.filesystemQuota={actualTmpfsBytes:2097152,status:full.status,errorCode:full.errorCode===null?null:safeCode({code:full.errorCode}),checkpointPreserved:JSON.stringify(checkpoint)===JSON.stringify(prior),remainingAttachmentBytes:directoryBytes('/limited/attachments')};
+ console.log(JSON.stringify({phase:'filesystem-quota',...receipt.filesystemQuota}));
+ assert.equal(full.status,'paused');assert.equal(full.errorCode,'STORAGE_FULL');assert.deepEqual(checkpoint,prior);assert.equal(receipt.filesystemQuota.remainingAttachmentBytes,0);quotaStore.close();
  receipt.final=metrics();assert(!/oom_kill [1-9]|oom [1-9]/.test(receipt.final['memory.events']));assert(Number(receipt.final['memory.peak'])<=335544320);receipt.softTargetExceeded=Number(receipt.final['memory.peak'])>268435456;receipt.diskBytes=directoryBytes('/data');receipt.passed=true;
 }finally{
  receipt.final=metrics();mkdirSync('/evidence',{recursive:true});writeFileSync('/evidence/resource.json',JSON.stringify(receipt,null,2));console.log(JSON.stringify({resourcePassed:receipt.passed,peak:receipt.final['memory.peak'],softTargetExceeded:receipt.softTargetExceeded,remaining:receipt.remaining}));
