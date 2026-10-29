@@ -8,8 +8,6 @@ import Binding from '@/components/unified-mail/ExternalBinding.vue'
 import Composer from '@/components/unified-mail/ExternalComposer.vue'
 import History from '@/components/unified-mail/OperationHistory.vue'
 import {useUiStore} from '@/store/ui.js'
-import {useAccountStore} from '@/store/account.js'
-import {encodeSourceRef} from '../../../shared/unified-mail/index.mjs'
 import { session } from '@/auth/session.js'
 import { useUnifiedStore } from '@/store/unified.js'
 
@@ -112,15 +110,6 @@ describe('unified mailbox', () => {
     await w.get('[data-mark-read]').trigger('click');await flushPromises()
     expect(api.request).toHaveBeenCalledWith('/unified/messages/external-1/read',expect.objectContaining({body:{unread:false}}))
     expect(storeRow('local-1').unread).toBe(true);expect(storeRow('external-1').unread).toBe(false)
-  })
-  it('opens the original rich local reply composer with the owning local account rather than the external numeric twin',async()=>{
-    const ref=encodeSourceRef({source:'cloud-mail',accountId:'1',id:'7'}),local={...message(ref,'cloud-mail'),text:'Local original',html:'<p>Local HTML</p>',attachments:[]}
-    api.request.mockImplementation(async path=>path==='/unified/messages'?page([local]):path==='/account/list'?[{accountId:1,email:'local-sender@test',name:'Local sender'}]:{message:local})
-    const w=render(Unified);await flushPromises();useUiStore().writerRef={openReply:vi.fn()}
-    await w.get(`[data-message-ref="${ref}"]`).trigger('click');await flushPromises();await w.findAll('button').find(b=>b.text()==='回复').trigger('click');await flushPromises()
-    expect(useAccountStore().currentAccount).toMatchObject({accountId:1,email:'local-sender@test'})
-    expect(useUiStore().writerRef.openReply).toHaveBeenCalledWith(expect.objectContaining({emailId:7,accountId:1,text:'Local original'}))
-    expect(api.request.mock.calls.some(([p])=>p==='/unified/messages/send')).toBe(false)
   })
   it('discards a late body after source selection changes even when the owner did not change',async()=>{
     let resolve

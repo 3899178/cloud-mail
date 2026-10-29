@@ -45,6 +45,7 @@
         </el-input-tag>
         <el-input v-model="form.subject" :placeholder="t('subject')" />
         <tinyEditor :def-value="defValue" ref="editor" @change="change" @focus="focusChange" />
+        <p v-if="sourceError" class="source-error" role="alert">{{sourceError}}</p>
         <div class="button-item">
           <div class="att-add" @click="chooseFile">
             <Icon icon="iconamoon:attachment-fill" width="24" height="24"/>
@@ -105,7 +106,7 @@
 <script setup>
 import { session } from "@/auth/session.js";
 import tinyEditor from '@/components/tiny-editor/index.vue'
-import {h, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, computed} from "vue";
+import {h, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, computed,watch} from "vue";
 import {Icon} from "@iconify/vue";
 import {useUserStore} from "@/store/user.js";
 import {emailSend} from "@/request/email.js";
@@ -125,12 +126,17 @@ import dayjs from "dayjs";
 import {useI18n} from "vue-i18n";
 import router from "@/router/index.js";
 import {ElMessageBox} from "element-plus";
+import {safeBody,escapeText} from '@/components/unified-mail/safe-content.js'
+import {assertLegacyPayload} from '@/utils/local-source-attachments.js'
+import {isStaleSession} from '@/auth/session-core.mjs'
 
 defineExpose({
   open,
   openReply,
   openForward,
-  openDraft
+  openDraft,
+  prepareSource,
+  sourceLease
 })
 
 const {t} = useI18n()
@@ -143,8 +149,14 @@ const editor = ref({})
 const userStore = useUserStore();
 const show = ref(false);
 const percent = ref(0)
+const sourceError=ref('')
 let percentMessage = null
 let sending = false
+let quoteRevision=0
+let quoteController=new AbortController()
+let importedSource=false
+function advanceQuote(){quoteRevision++;quoteController.abort();quoteController=new AbortController()}
+function sourceLease(){const revision=quoteRevision;return {signal:quoteController.signal,current:()=>revision===quoteRevision,assertCurrent(){if(revision!==quoteRevision)throw Object.assign(new Error(),{code:'STALE_SESSION'})}}}
 const defValue = ref('')
 const contactsTabRef = ref({})
 const showContacts = ref(false)
@@ -294,6 +306,7 @@ function chooseFile() {
   doc.multiple = true;
   doc.click()
   doc.onchange = async (e) => {
+    const fileLease=session.lease(),revision=quoteRevision
 
     const fileList = e.target.files;
 
@@ -304,6 +317,7 @@ function chooseFile() {
       const contentType = file.type
 
       const content = await fileToBase64(file)
+      if(!fileLease.current()||revision!==quoteRevision)return
       form.attachments.push({content, filename, size, contentType})
 
     }
@@ -350,6 +364,10 @@ async function sendEmail() {
     })
     return
   }
+  try{assertLegacyPayload(form)}catch(error){sourceError.value=error.code==='ATTACHMENT_LIMIT'?'附件最多 10 个，请移除多余附件。':'邮件内容和附件超过当前站点 100MB 请求上限，请移除附件或缩短正文。';return}
+  sourceError.value=''
+  const sendLease=session.lease(),sendRevision=quoteRevision,importedSend=importedSource
+  const sendCurrent=()=>{if(importedSend){sendLease.assertCurrent();if(sendRevision!==quoteRevision)throw Object.assign(new Error(),{code:'STALE_SESSION'})}}
 
   percentMessage = ElMessage({
     message: () => h(sendPercent, {value: percent.value, desc: t('sending')}),
@@ -360,12 +378,15 @@ async function sendEmail() {
   })
 
   sending = true
+  const sendingNotice=percentMessage
 
   show.value = false
 
   emailSend(form, (e) => {
+    if(importedSend&&(!sendLease.current()||sendRevision!==quoteRevision))return
     percent.value = Math.round((e.loaded * 98) / e.total)
   }).then(result => {
+    sendCurrent()
     const emailList = Array.isArray(result) ? result : result.emails
     const email = emailList[0]
     emailList.forEach(item => {
@@ -402,8 +423,10 @@ async function sendEmail() {
     }
 
     show.value = false
+    if(importedSend){sending=false;percent.value=0}
     resetForm();
   }).catch((e) => {
+    if(importedSend&&(!sendLease.current()||sendRevision!==quoteRevision||isStaleSession(e)))return
     ElNotification({
       title: t('sendFailMsg'),
       type: e.code === 403 ? 'warning' : 'error',
@@ -417,7 +440,8 @@ async function sendEmail() {
     show.value = true
     addRecipientRecord();
   }).finally(() => {
-    percentMessage.close()
+    sendingNotice.close()
+    if(importedSend&&(!sendLease.current()||sendRevision!==quoteRevision))return
     percent.value = 0
     sending = false
   })
@@ -433,6 +457,9 @@ function addRecipientRecord() {
 }
 
 function resetForm() {
+  advanceQuote()
+  importedSource=false
+  sourceError.value=''
   form.receiveEmail = []
   form.subject = ''
   form.content = ''
@@ -457,8 +484,37 @@ function focusChange() {
   if (selectStatus) openSelect()
 }
 
-function openForward(email) {
+function prepareSource(kind,email,account=accountStore.currentAccount){
+  const body=safeBody(email.content)||`<pre>${escapeText(email.text)}</pre>`
+  const replySubject=/^(Re[:：]|回复[:：])/.test(email.subject||'')?email.subject:'Re: '+(email.subject||'')
+  const content=kind==='reply'?`<div><br>${escapeText(formatDetailDate(email.createTime))} ${escapeText(email.name)} &lt;${escapeText(email.sendEmail)}&gt; ${escapeText(t('wrote'))}:</div><blockquote class="mceNonEditable">${body}</blockquote>`:body
+  return {sendEmail:account.email,receiveEmail:kind==='reply'?[email.sendEmail]:[],accountId:account.accountId,name:account.name||'',subject:kind==='reply'?replySubject:email.subject||'',content,text:email.text||'',sendType:kind,manyType:'together',emailId:email.emailId,attachments:[],draftId:null}
+}
+
+async function openImportedSource(kind,email,options){
+  const lease=session.lease()
+  const check=()=>{lease.assertCurrent();options.check?.()}
+  check()
+  const prepared=options.preparedForm||prepareSource(kind,email)
+  resetForm()
+  const revision=quoteRevision
+  const current=()=>{check();if(revision!==quoteRevision)throw Object.assign(new Error(),{code:'STALE_SESSION'})}
+  defValue.value=''
+  try{
+    await nextTick();current()
+    Object.assign(form,prepared,{attachments:options.attachments||[]})
+    importedSource=true
+    defValue.value=prepared.content
+    open(true)
+    await nextTick();current()
+    backReply.content=editor.value.getContent();backReply.subject=form.subject;backReply.receiveEmail=[...form.receiveEmail];backReply.sendType=form.sendType
+  }catch(error){if(lease.current()&&revision===quoteRevision){show.value=false;resetForm()}throw error}
+}
+
+function openForward(email,options={}) {
+  if(options.sourceImport)return openImportedSource('forward',email,options)
   resetForm();
+  const quoteLease=session.lease(),revision=quoteRevision
 
   email.subject = email.subject || ''
 
@@ -468,12 +524,14 @@ function openForward(email) {
   defValue.value = ''
 
   setTimeout(() => {
+    if(!quoteLease.current()||revision!==quoteRevision)return
     defValue.value = `
       ${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}
     `
-    open()
+    open(true)
 
     nextTick(() => {
+      if(!quoteLease.current()||revision!==quoteRevision)return
       backReply.content = editor.value.getContent()
       backReply.subject = form.subject
       backReply.receiveEmail = form.receiveEmail
@@ -483,9 +541,11 @@ function openForward(email) {
   });
 }
 
-function openReply(email) {
+function openReply(email,options={}) {
+  if(options.sourceImport)return openImportedSource('reply',email,options)
 
   resetForm();
+  const quoteLease=session.lease(),revision=quoteRevision
 
   email.subject = email.subject || ''
 
@@ -501,6 +561,7 @@ function openReply(email) {
   defValue.value = ''
 
   setTimeout(() => {
+    if(!quoteLease.current()||revision!==quoteRevision)return
     defValue.value = `
     <div></div>
     <div>
@@ -512,9 +573,10 @@ function openReply(email) {
           ${formatImage(email.content) || `<pre style="font-family: inherit;word-break: break-word;white-space: pre-wrap;margin: 0">${email.text}</pre>`}
       </article>
     </blockquote>`
-    open()
+    open(true)
 
     nextTick(() => {
+      if(!quoteLease.current()||revision!==quoteRevision)return
       backReply.content = editor.value.getContent()
       backReply.subject = form.subject
       backReply.receiveEmail = form.receiveEmail
@@ -530,7 +592,8 @@ function formatImage(content) {
   return content.replace(/{{domain}}/g, toOssDomain(domain) + '/');
 }
 
-function open() {
+function open(keepQuote=false) {
+  if(!keepQuote)advanceQuote()
   if (!accountStore.currentAccount.email) {
     form.sendEmail = userStore.user.email;
     form.accountId = userStore.user.account.accountId;
@@ -545,9 +608,11 @@ function open() {
 }
 
 function openDraft(draft) {
+  advanceQuote()
   Object.assign(form, {...draft, manyType: draft.manyType || 'together'})
   defValue.value = ''
-  setTimeout(() => defValue.value = form.content)
+  const lease=session.lease(),revision=quoteRevision
+  setTimeout(() => {if(lease.current()&&revision===quoteRevision)defValue.value=form.content})
   show.value = true;
   editor.value.focus()
 }
@@ -563,10 +628,13 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  advanceQuote()
   window.removeEventListener('keydown', handleKeyDown);
 });
+watch(()=>userStore.user.email,()=>{advanceQuote();if(importedSource){percentMessage?.close();percentMessage=null;sending=false;percent.value=0;show.value=false;resetForm();defValue.value=''}},{flush:'sync'})
 
 function close() {
+  advanceQuote()
 
   if (selectStatus) openSelect();
 
@@ -768,6 +836,7 @@ function close() {
   }
 
 }
+.source-error{color:var(--el-color-danger);font-size:13px;margin:0}
 
 .email-row {
   white-space: nowrap;

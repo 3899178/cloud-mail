@@ -23,6 +23,9 @@ http.interceptors.request.use(config => {
 http.interceptors.response.use((res) => {
         // Check again at the state-writing consumer, after earlier interceptor microtasks.
         res.config.sessionLease?.assertCurrent();
+        // Owned local attachment imports use a bounded streaming consumer. Keep
+        // the same HTTP/session fence without treating original bytes as JSON.
+        if (res.config.ownedAttachmentStream) return res.data;
 
         return new Promise((resolve, reject) => {
 
@@ -82,7 +85,7 @@ http.interceptors.response.use((res) => {
 
         if (isStaleSession(error)) return Promise.reject(error);
 
-        if (error.response?.status === 401 && error.response?.data?.error?.code === 'UNAUTHORIZED') {
+        if (error.response?.status === 401 && (error.response?.data?.error?.code === 'UNAUTHORIZED' || error.config?.ownedAttachmentStream)) {
             session.reset();
             router.replace('/login');
         }

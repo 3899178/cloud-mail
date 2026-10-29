@@ -7,6 +7,7 @@ const options={
   FORBID_CONTENTS:['script','style','svg','math','iframe','object','template']
 }
 export const safeBody=html=>DOMPurify.sanitize(html||'',options)
+export const escapeText=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]))
 export function plainBody(html){
   const fragment=DOMPurify.sanitize(html||'',{...options,RETURN_DOM_FRAGMENT:true})
   for(const node of fragment.querySelectorAll('br'))node.replaceWith('\n')

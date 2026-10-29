@@ -22,6 +22,7 @@
           <p v-if="confirmTrash" class="status-banner">{{store.detail.source==='external'?'将移入源邮箱垃圾箱。':'按原 Cloud Mail 规则删除此邮件。'}}<button data-confirm-trash @click="trash">确认删除</button><button @click="confirmTrash=false">取消</button></p>
           <p v-if="store.operation" role="status">{{operationStatus(store.operation)}} {{store.operation.errorCode}} <button v-if="store.operation.id" data-check-operation @click="store.checkOperation()">查询操作结果</button></p>
           <p v-if="store.operationError || actionError" role="alert">{{store.operationError || actionError}}</p>
+          <p v-if="importing" role="status">正在读取原附件 {{importProgress?.index||0}} / {{importProgress?.total||0}}：{{importProgress?.filename}} <button data-cancel-import @click="cancelImport(true)">取消转发 / 回复</button></p>
           <h2>{{store.detail.subject || '（无主题）'}}</h2><p class="sender">{{store.detail.from}}</p><p class="message-meta">{{store.detail.source==='cloud-mail'?'Cloud Mail':'外部邮箱'}} · {{sourceAccount(store.detail)?.address || '邮箱'}} · {{folderName(store.detail.folder)}} · {{date(store.detail.receivedAt)}}</p>
           <p v-if="store.detail.html" class="privacy-note">为保护隐私，已屏蔽远程图片、样式和活动内容。</p>
           <SafeBody v-if="store.detail.html" :html="store.detail.html" /><pre v-else class="plain-body">{{store.detail.text}}</pre>
@@ -58,18 +59,25 @@ const sourceAccount=message=>{
 const folderName=folder=>({Inbox:'收件箱',INBOX:'收件箱',Archive:'归档',archive:'归档'}[folder]||folder)
 const date=value=>new Date(value).toLocaleString()
 let alive=true,retryTimer,refreshTimer,pollTimer,indexAttempts=0,polls=0
+const importing=ref(false),importProgress=ref(null)
+let importController,importRevision=0
+function cancelImport(notice=false){importRevision++;importController?.abort();importing.value=false;importProgress.value=null;if(notice)actionError.value='已取消读取，未打开转发 / 回复窗口。'}
 const viewLease=session.lease()
 function backToList(){store.detailGeneration++;store.operationGeneration++;store.detail=null;store.operation=null;confirmTrash.value=false}
 function refresh(){indexAttempts=0;clearTimeout(retryTimer);store.load()}
 function localCompose(){ui.writerRef?.open()}
 async function compose(kind){
+  cancelImport()
   actionError.value='';const detail=store.detail,lease=session.lease()
   if(detail.source==='external'){ui.externalComposerRef?.open(detail,kind);return}
-  try{await openLocalComposer(kind,detail,()=>{lease.assertCurrent();if(store.detail?.ref!==detail.ref||!alive)throw Object.assign(new Error(),{code:'STALE_SESSION'})})}
-  catch(e){if(lease.current()&&alive&&!stale(e))actionError.value=safeCode(e)}
+  const revision=importRevision;importController=new AbortController();importing.value=true
+  const check=()=>{lease.assertCurrent();if(store.detail?.ref!==detail.ref||!alive||revision!==importRevision)throw Object.assign(new Error(),{code:'STALE_SESSION'})}
+  try{await openLocalComposer(kind,detail,check,{signal:importController.signal,onProgress:progress=>{check();importProgress.value=progress}})}
+  catch(e){if(lease.current()&&alive&&revision===importRevision&&!stale(e))actionError.value=`原附件或邮件读取失败，未打开转发 / 回复窗口：${safeCode(e)}`}
+  finally{if(lease.current()&&alive&&revision===importRevision)importing.value=false}
 }
 function trash(){confirmTrash.value=false;store.mutate('trash',store.detail.ref)}
-watch(()=>store.detail?.ref,()=>{confirmTrash.value=false;actionError.value=''})
+watch(()=>store.detail?.ref,()=>{cancelImport();confirmTrash.value=false;actionError.value=''})
 watch(()=>[store.selection.source,store.selection.accountId],()=>{indexAttempts=0;if(viewLease.current())store.load()})
 watch(()=>store.error,error=>{
   clearTimeout(retryTimer)
@@ -82,7 +90,7 @@ watch(()=>store.operation,operation=>{
 })
 function visible(){if(!document.hidden&&viewLease.current()&&store.error!=='LOCAL_INDEX_NOT_READY')store.load()}
 onMounted(()=>{store.load();refreshTimer=setInterval(()=>{if(viewLease.current()&&!document.hidden&&!store.loading&&store.error!=='LOCAL_INDEX_NOT_READY')store.load()},10000);document.addEventListener('visibilitychange',visible)})
-onBeforeUnmount(()=>{alive=false;store.listGeneration++;store.detailGeneration++;store.operationGeneration++;store.loading=false;clearTimeout(retryTimer);clearTimeout(pollTimer);clearInterval(refreshTimer);document.removeEventListener('visibilitychange',visible)})
+onBeforeUnmount(()=>{alive=false;cancelImport();store.listGeneration++;store.detailGeneration++;store.operationGeneration++;store.loading=false;clearTimeout(retryTimer);clearTimeout(pollTimer);clearInterval(refreshTimer);document.removeEventListener('visibilitychange',visible)})
 </script>
 <style scoped>
 .unified-mailbox{display:flex;flex-direction:column;min-height:0;height:100%;min-width:0;overflow:hidden;color:var(--el-text-color-primary)}.unified-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--el-border-color);flex-shrink:0}.unified-toolbar h1{font-size:18px;margin:0 auto 0 0;overflow-wrap:anywhere}.unified-columns{display:grid;grid-template-columns:minmax(240px,38%) minmax(0,1fr);flex:1;min-height:0}.message-list,.message-detail{overflow-y:auto;min-width:0;min-height:0;overscroll-behavior:contain}.message-list{border-right:1px solid var(--el-border-color)}.message-row{width:100%;border:0;border-radius:0;border-bottom:1px solid var(--el-border-color);padding:14px 16px;text-align:left;display:grid;gap:8px;line-height:1.45;overflow-wrap:anywhere}.message-row.unread{box-shadow:inset 3px 0 var(--el-color-primary)}.message-row.selected{background:var(--el-color-primary-light-9)}.message-row small,.message-meta,.privacy-note{font-size:12px;color:var(--el-text-color-secondary)}.row-top{display:flex;gap:10px;justify-content:space-between;align-items:start}.row-top time{font-size:11px;flex-shrink:0;font-weight:normal}.row-top strong{font-weight:inherit}.unread .row-top strong{font-weight:700}.message-detail{padding:16px 22px}.message-detail h2{font-size:22px;overflow-wrap:anywhere}.sender{overflow-wrap:anywhere}.detail-actions{display:flex;gap:8px;flex-wrap:wrap}.plain-body{white-space:pre-wrap;font:inherit;overflow-wrap:anywhere;line-height:1.6}.attachments{display:grid;gap:12px;margin-top:28px}.attachments a{color:var(--el-color-primary);overflow-wrap:anywhere}.empty{padding:20px;color:var(--el-text-color-secondary)}button{background:var(--el-bg-color);color:inherit;border:1px solid var(--el-border-color);border-radius:5px;padding:7px 10px;cursor:pointer}button:disabled{opacity:.5;cursor:default}.status-banner{margin:0;padding:10px 16px;background:var(--el-fill-color-light);font-size:13px;line-height:1.5}.status-banner button{margin-left:8px}.load-more{margin:15px}.message-row:hover{background:var(--el-fill-color-light)}[role=alert]{color:var(--el-color-danger)}
