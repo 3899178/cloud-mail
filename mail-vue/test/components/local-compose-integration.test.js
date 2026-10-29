@@ -179,4 +179,41 @@ describe('real unified local bridge and rich writer',()=>{
     await w.get('[data-recipient]').setValue('recipient@test');await w.get('[data-send]').trigger('click');await flushPromises()
     expect(boundary.payloads[0].attachments).toEqual([{filename:'original.bin',contentType:'application/octet-stream',size:0,content:''}])
   })
+  it.each(['success','failure'])('releases an obsolete imported send after %s so the same owner can send the intact new draft',async outcome=>{
+    await quote('reply',source({text:'Old source'}));let resolve,reject
+    boundary.send.mockImplementationOnce(()=>new Promise((yes,no)=>{resolve=yes;reject=no}))
+    await w.get('[data-send]').trigger('click');await flushPromises()
+    w.vm.openDraft({accountId:1,sendEmail:'owned@test',name:'Owner',subject:'New draft',content:'<p>Keep same owner draft</p>',receiveEmail:['recipient@test'],attachments:[]})
+    await vi.runOnlyPendingTimersAsync();await flushPromises()
+    if(outcome==='success')resolve([{emailId:8,subject:'Old sent'}]);else reject({code:500,message:'Old failure'})
+    await flushPromises()
+    expect(content).toContain('Keep same owner draft');expect(w.find('.send').isVisible()).toBe(true)
+    expect(ElNotification).not.toHaveBeenCalled()
+    await w.get('[data-send]').trigger('click');await flushPromises()
+    expect(boundary.send).toHaveBeenCalledTimes(2)
+    expect(boundary.payloads[0]).toMatchObject({subject:'New draft',content:'<p>Keep same owner draft</p>',receiveEmail:['recipient@test']})
+  })
+  it('keeps a newer owner send busy when the obsolete owner operation completes',async()=>{
+    await quote('reply',source({text:'Old owner source'}));let resolveOld,resolveNew
+    boundary.send.mockImplementationOnce(()=>new Promise(resolve=>resolveOld=resolve))
+    await w.get('[data-send]').trigger('click');await flushPromises()
+    const oldNotice=ElMessage.mock.results.at(-1).value
+    session.advance();boundary.owner.user.email='new-owner@test'
+    boundary.request.mockResolvedValue([{accountId:1,email:'new-owner@test',name:'New owner'}])
+    await quote('reply',source({text:'New pending body'}))
+    boundary.send.mockImplementationOnce(()=>new Promise(resolve=>resolveNew=resolve))
+    await w.get('[data-send]').trigger('click');await flushPromises()
+    const newNotice=ElMessage.mock.results.at(-1).value
+    resolveOld([{emailId:8,subject:'Old sent'}]);await flushPromises()
+    expect(oldNotice.close).toHaveBeenCalled();expect(newNotice.close).not.toHaveBeenCalled()
+    w.vm.openDraft({accountId:1,sendEmail:'new-owner@test',name:'New owner',subject:'Third draft',content:'<p>Third intact body</p>',receiveEmail:['recipient@test'],attachments:[]})
+    await vi.runOnlyPendingTimersAsync();await flushPromises()
+    await w.get('[data-send]').trigger('click');await flushPromises()
+    expect(boundary.send).toHaveBeenCalledTimes(2)
+    expect(ElMessage).toHaveBeenLastCalledWith(expect.objectContaining({message:'sendingErrorMsg'}))
+    expect(content).toContain('Third intact body')
+    resolveNew([{emailId:9,subject:'New sent'}]);await flushPromises()
+    expect(newNotice.close).toHaveBeenCalled()
+    expect(content).toContain('Third intact body');expect(w.find('.send').isVisible()).toBe(true)
+  })
 })

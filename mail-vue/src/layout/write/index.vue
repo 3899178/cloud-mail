@@ -152,6 +152,7 @@ const percent = ref(0)
 const sourceError=ref('')
 let percentMessage = null
 let sending = false
+let activeSend = null
 let quoteRevision=0
 let quoteController=new AbortController()
 let importedSource=false
@@ -378,11 +379,13 @@ async function sendEmail() {
   })
 
   sending = true
-  const sendingNotice=percentMessage
+  const operation={notice:percentMessage}
+  activeSend=operation
 
   show.value = false
 
   emailSend(form, (e) => {
+    if(activeSend!==operation)return
     if(importedSend&&(!sendLease.current()||sendRevision!==quoteRevision))return
     percent.value = Math.round((e.loaded * 98) / e.total)
   }).then(result => {
@@ -423,7 +426,6 @@ async function sendEmail() {
     }
 
     show.value = false
-    if(importedSend){sending=false;percent.value=0}
     resetForm();
   }).catch((e) => {
     if(importedSend&&(!sendLease.current()||sendRevision!==quoteRevision||isStaleSession(e)))return
@@ -440,8 +442,12 @@ async function sendEmail() {
     show.value = true
     addRecipientRecord();
   }).finally(() => {
-    sendingNotice.close()
-    if(importedSend&&(!sendLease.current()||sendRevision!==quoteRevision))return
+    operation.notice.close()
+    // Draft/result leases protect content. Busy/progress belongs to the request,
+    // so its completion must release it even when that draft lease is obsolete.
+    if(activeSend!==operation)return
+    activeSend=null
+    percentMessage=null
     percent.value = 0
     sending = false
   })
@@ -631,7 +637,7 @@ onUnmounted(() => {
   advanceQuote()
   window.removeEventListener('keydown', handleKeyDown);
 });
-watch(()=>userStore.user.email,()=>{advanceQuote();if(importedSource){percentMessage?.close();percentMessage=null;sending=false;percent.value=0;show.value=false;resetForm();defValue.value=''}},{flush:'sync'})
+watch(()=>userStore.user.email,()=>{advanceQuote();if(importedSource){percentMessage?.close();percentMessage=null;activeSend=null;sending=false;percent.value=0;show.value=false;resetForm();defValue.value=''}},{flush:'sync'})
 
 function close() {
   advanceQuote()
