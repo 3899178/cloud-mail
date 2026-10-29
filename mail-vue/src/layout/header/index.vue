@@ -109,6 +109,7 @@ import {setExtend} from "@/utils/day.js"
 import emailSearch from '@/components/email-search/index.vue'
 import {useEmailStore} from '@/store/email.js'
 import {useSendStore} from '@/store/send.js'
+import {useUnifiedStore} from '@/store/unified.js'
 
 const {t} = useI18n();
 const route = useRoute();
@@ -117,6 +118,7 @@ const userStore = useUserStore();
 const uiStore = useUiStore();
 const emailStore = useEmailStore()
 const sendStore = useSendStore()
+const unifiedStore = useUnifiedStore()
 const logoutLoading = ref(false)
 const userDropdownRef = ref(null)
 const userCardVisible = ref(false)
@@ -235,7 +237,8 @@ function changeLang(lang) {
 }
 
 function openSend() {
-  uiStore.writerRef.open()
+  if (route.name === 'unified' && unifiedStore.selection.source === 'external') uiStore.externalComposerRef?.open()
+  else uiStore.writerRef.open()
 }
 
 function changeAside() {

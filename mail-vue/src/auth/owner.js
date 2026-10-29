@@ -8,6 +8,7 @@ import { useEmailStore } from '@/store/email.js';
 import { useSendStore } from '@/store/send.js';
 import { userDraftStore } from '@/store/draft.js';
 import { useWriterStore } from '@/store/writer.js';
+import { useUnifiedStore } from '@/store/unified.js';
 
 // Reset display caches, never the email-keyed Dexie drafts.
 export function ownerSession() {
@@ -16,7 +17,7 @@ export function ownerSession() {
     router,
     userStore: useUserStore(),
     accountStore: useAccountStore(),
-    caches: [useEmailStore(), useSendStore(), userDraftStore(), useWriterStore()],
+    caches: [useEmailStore(), useSendStore(), userDraftStore(), useWriterStore(), useUnifiedStore()],
     routesFor: permsToRouter
   });
 }

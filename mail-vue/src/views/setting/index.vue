@@ -2,6 +2,7 @@
   <div class="settings-page">
     <el-scrollbar height="100%">
   <div class="box">
+    <div id="external-mailboxes"><ExternalBinding /><OperationHistory /></div>
     <div class="container">
       <div class="title">{{$t('profile')}}</div>
       <div class="item setting-row">
@@ -92,6 +93,8 @@ import {useI18n} from "vue-i18n";
 import {useSettingStore} from "@/store/setting.js";
 import {useUiStore} from "@/store/ui.js";
 import ThemeSelector from "@/components/theme-selector/index.vue";
+import ExternalBinding from '@/components/unified-mail/ExternalBinding.vue'
+import OperationHistory from '@/components/unified-mail/OperationHistory.vue'
 
 const { t } = useI18n()
 const accountStore = useAccountStore()

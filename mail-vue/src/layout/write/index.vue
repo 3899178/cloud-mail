@@ -642,6 +642,7 @@ function close() {
 </style>
 <style scoped lang="scss">
 .send {
+  z-index: 150;
   position: fixed;
   top: 0;
   left: 0;

@@ -14,6 +14,12 @@ const routes = [
         component: () => import('@/layout/index.vue'),
         children: [
             {
+                path: '/unified',
+                name: 'unified',
+                component: () => import('@/views/unified/index.vue'),
+                meta: { title: 'inbox', name: 'unified', menu: true }
+            },
+            {
                 path: '/inbox',
                 name: 'email',
                 component: () => import('@/views/email/index.vue'),
