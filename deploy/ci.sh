@@ -87,5 +87,7 @@ docker exec "$smoke" /usr/local/bin/supervisor health
 docker exec "$smoke" node /app/deploy/fixtures/lifecycle.mjs verify
 docker stop --time 25 "$smoke" >/dev/null
 docker run --rm --network none --read-only --user 10001:10001 --entrypoint node -v "$RUNNER_TEMP/smoke-data:/data" -v "$RUNNER_TEMP/evidence:/evidence:ro" -v "$ROOT/deploy/fixtures:/app/deploy/fixtures:ro" -e MAIL_SYNC_MASTER_KEY cloud-mail:runtime /app/deploy/fixtures/lifecycle.mjs verify
-"$NODE" -e 'const {DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(process.argv[1]);if(db.prepare("PRAGMA integrity_check").get().integrity_check!=="ok")process.exit(1);db.close();console.log("STOP_RESTART_SQLITE_INTEGRITY_OK")' "$RUNNER_TEMP/smoke-data/mail.sqlite"
+# A read-only WAL connection may create sidecars after the last writer closes.
+# Keep its owner-only data directory writable; SQL remains read-only.
+docker run --rm --network none --read-only --user 10001:10001 --entrypoint node -v "$RUNNER_TEMP/smoke-data:/data" cloud-mail:runtime -e 'const {DatabaseSync}=require("node:sqlite");const db=new DatabaseSync("/data/mail.sqlite",{readOnly:true});if(db.prepare("PRAGMA integrity_check").get().integrity_check!=="ok")process.exit(1);db.close();console.log("STOP_RESTART_SQLITE_INTEGRITY_OK")'
 docker image inspect cloud-mail:runtime --format 'candidate-image-id={{.Id}}'
