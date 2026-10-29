@@ -61,8 +61,12 @@ test('public tests cannot access secrets or publish; image publication waits for
   assert.doesNotMatch(ci,/secrets\.|packages: write|pull_request_target|docker login|ssh /);
   assert.match(ci,/persist-credentials: false/);
   const publish=readFileSync(join(root,'.github/workflows/publish-mail-sync.yml'),'utf8');
-  assert.doesNotMatch(publish,/push:|pull_request:|pull_request_target|\$\{\{\s*secrets\.|ssh /);
-  assert.match(publish,/needs: acceptance/);assert.match(publish,/refs\/heads\/main/);
+  assert.doesNotMatch(publish,/pull_request:|pull_request_target|\$\{\{\s*secrets\.|ssh /);
+  assert.match(publish,/tags: \['mail-sync-preview-\*'\]/);
+  assert.match(publish,/github\.actor == '3899178'/);
+  assert.match(publish,/github\.repository == '3899178\/cloud-mail'/);
+  assert.match(publish,/format\('refs\/tags\/mail-sync-preview-\{0\}', github\.sha\)/);
+  assert.match(publish,/needs: publish/);assert.match(publish,/refs\/heads\/main/);
   for(const workflow of [ci,publish])for(const line of workflow.split('\n').filter(l=>/uses:/.test(l)&&!l.includes('./')))assert.match(line,/@[a-f0-9]{40}(?:\s|$)/);
 });
 test('operator backup integrity refuses an edited prerequisite and never needs real credentials',async()=>{

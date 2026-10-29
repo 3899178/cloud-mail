@@ -19,7 +19,7 @@ NODE="$RUNNER_TEMP/node24"
 CONTEXT="$RUNNER_TEMP/context-$GITHUB_SHA"
 "$NODE" deploy/build-context.mjs "$CONTEXT"
 # The daemon sees only this selected context; never pass repository root.
-docker build --platform linux/amd64 --target runtime --label "org.opencontainers.image.revision=$GITHUB_SHA" -f "$CONTEXT/deploy/Dockerfile" -t cloud-mail:runtime "$CONTEXT"
+docker build --platform linux/amd64 --target runtime --label "org.opencontainers.image.revision=$GITHUB_SHA" --label 'org.opencontainers.image.source=https://github.com/3899178/cloud-mail' -f "$CONTEXT/deploy/Dockerfile" -t cloud-mail:runtime "$CONTEXT"
 docker build --platform linux/amd64 --target test -f "$CONTEXT/deploy/Dockerfile" -t cloud-mail:test "$CONTEXT"
 docker run --rm --network none cloud-mail:test
 docker image inspect cloud-mail:runtime --format '{{.Id}} {{json .Config.User}} {{json .Config.Entrypoint}}'
