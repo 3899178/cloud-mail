@@ -1,6 +1,6 @@
 package main
 
-// Only compiled into the CI fixture binary, never the production helper. The
+// Only compiled into the test fixture binary, never the production helper. The
 // exact production binary keeps its HTTPS host restriction and uses normal
 // refresh/unlock/events/PGP/MIME paths against this isolated TLS upstream.
 import (
@@ -18,6 +18,7 @@ import (
 	pm "github.com/emersion/hydroxide/protonmail"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +30,18 @@ import (
 )
 
 type fixtureZeros struct{}
+
+func resourceProviderListener() (net.Listener, error) {
+	address := "0.0.0.0:443"
+	switch os.Getenv("CLOUD_MAIL_RESOURCE_LOOPBACK") {
+	case "":
+	case "1":
+		address = "127.0.0.1:0"
+	default:
+		return nil, fmt.Errorf("invalid fixture listener mode")
+	}
+	return net.Listen("tcp", address)
+}
 
 func (fixtureZeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }
 func resourceMessageEvent(phase int64, message func(string) *pm.Message) map[string]any {
@@ -213,7 +226,12 @@ func TestResourceProviderChild(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(buf.Bytes())
 	})
-	server := &http.Server{Addr: "0.0.0.0:443", Handler: handler, TLSConfig: &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}}
-	fmt.Println("RESOURCE_PROTON_PROVIDER_READY")
-	t.Fatal(server.ListenAndServeTLS("", ""))
+	listener, err := resourceProviderListener()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	server := &http.Server{Handler: handler, TLSConfig: &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}}
+	fmt.Printf("RESOURCE_PROTON_PROVIDER_READY %d\n", listener.Addr().(*net.TCPAddr).Port)
+	t.Fatal(server.ServeTLS(listener, "", ""))
 }
