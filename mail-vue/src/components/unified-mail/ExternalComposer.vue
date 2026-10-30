@@ -65,7 +65,7 @@ async function send(){
   if(!form.accountId){error.value='请先绑定并选择发件邮箱';return}
   sendController=new AbortController();sending.value=true;error.value=''
   try{
-    const data=await request('/unified/messages/send',{method:'POST',body:{source:'external',accountId:form.accountId,kind:kind.value,...(sourceMessage.value?{ref:sourceMessage.value.ref}:{}),message:{to:recipients(form.to),cc:recipients(form.cc),bcc:recipients(form.bcc),subject:form.subject,text:form.text,attachmentIds:[...form.attachmentIds],uploadIds:uploads.value.map(u=>u.id)}},signal:AbortSignal.any([lease.signal,sendController.signal])})
+    const data=await request('/unified/messages/send',{method:'POST',body:{source:'external',accountId:form.accountId,kind:kind.value,...(sourceMessage.value?{ref:sourceMessage.value.ref}:{}),message:{to:recipients(form.to),cc:recipients(form.cc),bcc:recipients(form.bcc),subject:form.subject,text:form.text,...(sourceMessage.value?{attachmentIds:[...form.attachmentIds]}:{}),uploadIds:uploads.value.map(u=>u.id)}},signal:AbortSignal.any([lease.signal,sendController.signal])})
     lease.assertCurrent();if(run!==generation)return
     operation.value=data.operation;uploads.value=[]
   }catch(e){if(lease.current()&&run===generation&&!stale(e)){
