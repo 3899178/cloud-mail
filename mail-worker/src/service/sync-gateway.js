@@ -81,9 +81,7 @@ export async function syncRequest(c, {
   });
   let response;
   try {
-    response = await (c.env.MAIL_SYNC || {
-      fetch
-    }).fetch(request);
+    response = await (c.env.MAIL_SYNC ? c.env.MAIL_SYNC.fetch(request) : fetch(request));
   } catch {
     fail('SYNC_UNAVAILABLE');
   }

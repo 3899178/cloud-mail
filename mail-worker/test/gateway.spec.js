@@ -1,4 +1,5 @@
 import { beforeEach, it, expect } from 'vitest';
+import { fetchMock } from 'cloudflare:test';
 import app from '../src/hono/webs';
 import { fixture, auth, env } from './fixture';
 import { encodeSourceRef, verifyGatewayAssertion } from '../../shared/unified-mail/index.mjs';
@@ -24,6 +25,50 @@ it('forwards authenticated owner, exact query/body with fresh assertions and saf
   expect(claims.ownerId).toBe('1');expect(body).toContain('"ownerId":"2"');return Response.json({account:{id:'a',status:'pending'}},{status:201});
  }};
  for(let i=0;i<2;i++) { const r=await req('/external/accounts',{method:'POST',headers:{'x-owner-id':'2'},body:JSON.stringify({ownerId:'2',provider:'imap',address:'a@test.example'})});expect(r.status).toBe(201); }
+});
+it('global fetch fallback preserves native receiver and signed owner scope without a binding', async () => {
+ const previous = { binding: env.MAIL_SYNC, url: env.MAIL_SYNC_URL, key: env.MAIL_SYNC_GATEWAY_KEY };
+ const originalFetch = globalThis.fetch;
+ delete env.MAIL_SYNC;
+ env.MAIL_SYNC_URL = 'https://gateway-global-fallback.example.test';
+ env.MAIL_SYNC_GATEWAY_KEY = '07'.repeat(32);
+ let outbound;
+ try {
+  fetchMock.activate();
+  fetchMock.disableNetConnect();
+  // The pool wraps native fetch in an arrow function that binds globalThis,
+  // masking workerd's native Illegal invocation check. Restore that check at
+  // the real global fallback boundary while keeping all I/O locally mocked.
+  globalThis.fetch = function (input, init) {
+   if (this !== undefined && this !== globalThis) throw new TypeError('Illegal invocation');
+   return originalFetch(input, init);
+  };
+  fetchMock.get(env.MAIL_SYNC_URL).intercept({ method: 'GET', path: '/v1/accounts' }).reply(options => {
+   outbound = options;
+   return { statusCode: 200, data: JSON.stringify({ accounts: [] }), responseOptions: { headers: { 'content-type': 'application/json' } } };
+  });
+  expect(env.MAIL_SYNC).toBeUndefined();
+  const response = await req('/external/accounts?ownerId=2', { headers: { 'x-owner-id': '2' } });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ code: 200, message: 'success', data: { accounts: [] } });
+  expect(response.headers.get('cache-control')).toBe('no-store');
+  fetchMock.assertNoPendingInterceptors();
+  expect(outbound.method).toBe('GET');
+  expect(outbound.path).toBe('/v1/accounts');
+  const headers = new Headers(outbound.headers);
+  expect(headers.has('authorization')).toBe(false);
+  const claims = await verifyGatewayAssertion({
+   key: new Uint8Array(32).fill(7), token: headers.get('x-gateway-assertion'),
+   method: 'GET', path: '/v1/accounts', body: '', consumeNonce: () => true
+  });
+  expect(claims.ownerId).toBe('1');
+ } finally {
+  globalThis.fetch = originalFetch;
+  fetchMock.deactivate();
+  if (previous.binding === undefined) delete env.MAIL_SYNC; else env.MAIL_SYNC = previous.binding;
+  if (previous.url === undefined) delete env.MAIL_SYNC_URL; else env.MAIL_SYNC_URL = previous.url;
+  if (previous.key === undefined) delete env.MAIL_SYNC_GATEWAY_KEY; else env.MAIL_SYNC_GATEWAY_KEY = previous.key;
+ }
 });
 it('rejects other tenant local detail, mutation and attachment refs without touching mail',async()=>{
  await env.db.prepare("INSERT INTO email(email_id,user_id,account_id,subject,create_time) VALUES(1,2,2,'private','2026-01-01 00:00:00')").run();
