@@ -40,9 +40,33 @@ export const useUnifiedStore = defineStore('unified', {
         this.items=[...new Map(rows.map(m=>[m.ref,m])).values()]
         this.incomplete=!!data.incomplete; this.resetRequired=!!data.resetRequired
         this.sources=data.sources; this.nextCursor=data.resetRequired?null:data.nextCursor
-        if(this.detail && !append) { const row=this.items.find(m=>m.ref===this.detail.ref); if(row)this.detail={...this.detail,...row} }
+        if(this.detail && !append) {
+          const row=this.items.find(m=>m.ref===this.detail.ref)
+          if(row)this.detail={...this.detail,...row}
+          if(!row || this.detailError)await this.revalidateDetail(lease,generation)
+        }
       } catch(e) { if(lease.current() && generation===this.listGeneration && !quiet(e))this.error=codeOf(e) }
       finally { if(lease.current() && generation===this.listGeneration)this.loading=false }
+    },
+    async revalidateDetail(lease,listGeneration) {
+      const ref=this.detail?.ref, generation=this.detailGeneration, operationGeneration=this.operationGeneration
+      if(!ref || ['queued','running'].includes(this.operation?.state))return
+      const current=()=>lease.current() && listGeneration===this.listGeneration && generation===this.detailGeneration && operationGeneration===this.operationGeneration && this.detail?.ref===ref
+      try {
+        // A missing first-page row may be older than that page. Confirm against
+        // the owned detail endpoint before discarding a retained selection.
+        const data=await request(`/unified/messages/${encodeURIComponent(ref)}`,{signal:lease.signal})
+        lease.assertCurrent();if(!current())return
+        if(data.message?.ref!==ref)throw Object.assign(new Error(),{code:'INVALID_RESPONSE'})
+        this.detail=data.message;this.detailError=''
+      } catch(e) {
+        if(!current() || quiet(e))return
+        this.detailError=codeOf(e)
+        if(codeOf(e)==='NOT_FOUND') {
+          this.detail=null;this.detailGeneration++;this.operationGeneration++
+          this.operation=null;this.operationError=''
+        }
+      }
     },
     async open(ref) {
       const lease=session.lease(), generation=++this.detailGeneration

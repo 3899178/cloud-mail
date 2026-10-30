@@ -33,6 +33,76 @@ const message = (ref, source='external') => ({ref,source,accountId:'1',receivedA
 const page = items => ({items,nextCursor:null,incomplete:false,resetRequired:false,sources:{local:'ready',external:'ready'}})
 const account = {id:'1',provider:'qq',address:'qq@test',status:'needs-auth',errorCode:'AUTH_REQUIRED'}
 
+describe('selected detail revalidation', () => {
+  it('removes cached body and attachment links after source deletion is confirmed', async () => {
+    let removed=false
+    api.request.mockImplementation(async path=>{
+      if(path==='/unified/messages')return page(removed?[]:[message('deleted')])
+      if(removed)throw Object.assign(new Error(),{code:'NOT_FOUND'})
+      return {message:{...message('deleted'),text:'Cached deleted body',attachments:[{id:'a',filename:'old.txt',size:1}]}}
+    })
+    const w=render(Unified);await flushPromises();await useUnifiedStore().open('deleted');await flushPromises()
+    expect(w.text()).toContain('Cached deleted body');expect(w.find('a[download]').exists()).toBe(true)
+    removed=true;await useUnifiedStore().load();await flushPromises()
+    expect(useUnifiedStore().detail).toBeNull();expect(w.text()).not.toContain('Cached deleted body');expect(w.find('a[download]').exists()).toBe(false)
+  })
+  it('keeps and updates an existing selected message outside the newest list page',async()=>{
+    let newerPage=false
+    api.request.mockImplementation(async path=>path==='/unified/messages'?{...page(newerPage?[]:[message('older')]),nextCursor:newerPage?'newer-page-cursor':null}:{message:{...message('older'),text:newerPage?'Still retained body':'Initial body',attachments:[]}})
+    render(Unified);await flushPromises();const store=useUnifiedStore();await store.open('older')
+    newerPage=true;await store.load()
+    expect(store.detail.ref).toBe('older');expect(store.detail.text).toBe('Still retained body');expect(store.nextCursor).toBe('newer-page-cursor')
+  })
+  it('does not erase a newly selected message when an older detail check returns404 late',async()=>{
+    let refreshing=false,rejectOld
+    api.request.mockImplementation(async path=>{
+      if(path==='/unified/messages')return page(refreshing?[]:[message('old'),message('new')])
+      if(path.endsWith('/old')&&refreshing)return new Promise((_,reject)=>{rejectOld=reject})
+      const ref=path.endsWith('/new')?'new':'old';return {message:{...message(ref),text:ref+' body',attachments:[]}}
+    })
+    render(Unified);await flushPromises();const store=useUnifiedStore();await store.open('old')
+    refreshing=true;const refresh=store.load();await flushPromises();await store.open('new')
+    if(rejectOld)rejectOld(Object.assign(new Error(),{code:'NOT_FOUND'}))
+    await refresh;expect(store.detail.ref).toBe('new');expect(store.detail.text).toBe('new body')
+  })
+  it('preserves cached body with an honest error during temporary source outage',async()=>{
+    let outage=false
+    api.request.mockImplementation(async path=>{
+      if(path==='/unified/messages')return outage?{...page([]),incomplete:true,sources:{local:'ready',external:'unavailable'}}:page([message('retained')])
+      if(outage)throw Object.assign(new Error(),{code:'SYNC_UNAVAILABLE'})
+      return {message:{...message('retained'),text:'Retained during outage',attachments:[]}}
+    })
+    render(Unified);await flushPromises();const store=useUnifiedStore();await store.open('retained')
+    outage=true;await store.load();expect(store.detail.text).toBe('Retained during outage');expect(store.detailError).toBe('SYNC_UNAVAILABLE')
+  })
+  it('revalidates the body error after the source recovers into the first page',async()=>{
+    let phase='initial'
+    api.request.mockImplementation(async path=>{
+      if(path==='/unified/messages')return page(phase==='outage'?[]:[message('recovered')])
+      if(phase==='outage')throw Object.assign(new Error(),{code:'SYNC_UNAVAILABLE'})
+      return {message:{...message('recovered'),text:phase==='ready'?'Recovered body':'Initial body',attachments:[]}}
+    })
+    render(Unified);await flushPromises();const store=useUnifiedStore();await store.open('recovered')
+    phase='outage';await store.load();expect(store.detailError).toBe('SYNC_UNAVAILABLE')
+    phase='ready';await store.load();expect(store.detailError).toBe('');expect(store.detail.text).toBe('Recovered body')
+  })
+  it('does not let a detail check begun during a read overwrite its confirmed result',async()=>{
+    let refreshing=false,resolveRead,resolveDetail
+    api.request.mockImplementation(async path=>{
+      if(path==='/unified/messages')return page(refreshing?[]:[message('reading')])
+      if(path.endsWith('/read'))return new Promise(resolve=>{resolveRead=resolve})
+      if(refreshing)return new Promise(resolve=>{resolveDetail=resolve})
+      return {message:{...message('reading'),text:'Body',attachments:[]}}
+    })
+    render(Unified);await flushPromises();const store=useUnifiedStore();await store.open('reading')
+    const read=store.mutate('read','reading',{unread:false});await flushPromises()
+    refreshing=true;const refresh=store.load();await flushPromises()
+    resolveRead({operation:{state:'succeeded'}});await read
+    if(resolveDetail)resolveDetail({message:{...message('reading'),text:'Body',attachments:[]}})
+    await refresh;expect(store.detail.unread).toBe(false)
+  })
+})
+
 describe('mailbox sidebar', () => {
   it('keeps a phone rail present while full mailbox names can expand', async () => {
     api.request.mockResolvedValue({accounts:[account]})
