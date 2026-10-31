@@ -2,6 +2,8 @@
 
 Task7b remains **OPEN** until controller-reviewed publication executes the real Linux gates and preview/production acceptance. Windows cross-builds do not prove Unix security, a container image, or the combined memory envelope. Android is deferred. The target remains the existing website with continuous AWS ingestion while the owner's computer is off.
 
+The independent coordinator has now completed Linux acceptance, publication and anonymous immutable pulling for application commit `dae2a30785e84ce7fba387f264d6f41d2bfec4a3`. The preview uses that accepted image. Actual AWS host capacity and production promotion remain open; see the [dated web acceptance record](../docs/acceptance/web-preview-2026-10-31.md) for the tested scope and remaining gates. This historical result does not authorize deployment from a later documentation or application commit.
+
 ## CI and image
 
 `mail-sync-linux.yml` is secret-free on PR/feature/main/manual runs. It never deploys. `deploy-cloudflare.yml` now only gives operator instructions; a normal merge cannot deploy/init production or erase run history. `publish-mail-sync.yml` accepts an owner-created tag `mail-sync-preview-<full40hexSHA>` on the exact reviewed commit, or later manual execution on main. Both the job and executable guard require repository `3899178/cloud-mail`, actor `3899178`, matching event/ref/source and exact checked-out SHA. PRs and arbitrary branch/ref inputs cannot publish. The tag path supplies a preview image before a main-branch merge; manual dispatch alone requires a workflow already present on the default branch.
