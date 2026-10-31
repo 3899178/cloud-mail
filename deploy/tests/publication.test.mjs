@@ -6,6 +6,8 @@ const source='a'.repeat(40),testedImageID='sha256:'+'b'.repeat(64),digest='sha25
 const context=()=>({repository:'3899178/cloud-mail',actor:'3899178',event:'push',ref:'refs/tags/mail-sync-preview-'+source,source,checkout:source});
 const image=()=>({Id:testedImageID,Os:'linux',Architecture:'amd64',User:'10001:10001',Labels:{'org.opencontainers.image.revision':source,'org.opencontainers.image.source':'https://github.com/3899178/cloud-mail'},RepoDigests:['ghcr.io/3899178/cloud-mail/mail-sync@'+digest]});
 const tested=()=>({accepted:true,source,testedImageID});
+const coordinator=()=>({repository:'3899178/cloud-mail-build',actor:'3899178',event:'workflow_dispatch',ref:'refs/heads/main',source,checkout:source,workflowSource:'e'.repeat(40)});
+const coordinatorImage=(labels={})=>({...image(),Labels:{...image().Labels,'org.opencontainers.image.source':'https://github.com/3899178/cloud-mail-build','org.cloudmail.application-source':'https://github.com/3899178/cloud-mail','org.cloudmail.coordinator-revision':coordinator().workflowSource,...labels},RepoDigests:['ghcr.io/3899178/cloud-mail-build/mail-sync@'+digest]});
 
 test('publication guard binds owner repository event tag and exact checked-out SHA',async()=>{
  const {guardContext}=await import('../publication.mjs');assert.equal(guardContext(context()),source);
@@ -87,5 +89,60 @@ test('acceptance rejects image platform user or provenance drift and strips ambi
    assert.equal(o.env.PATH,'fixture-path');assert.equal(o.env.GHCR_TOKEN,undefined);assert.equal(o.env.ACTIONS_RUNTIME_TOKEN,undefined);assert.equal(o.env.DOCKER_AUTH_CONFIG,undefined);
    return p==='docker'?JSON.stringify({...image(),...delta}):'';
   }}));
+ }
+});
+
+test('coordinator guard requires owner manual main and independently valid application and workflow commits',async()=>{
+ const {guardContext}=await import('../publication.mjs');
+ assert.equal(guardContext(coordinator()),source);
+ for(const delta of [{repository:'3899178/cloud-mail-build-other'},{actor:'other'},{event:'push',ref:'refs/tags/mail-sync-preview-'+source},{ref:'refs/heads/feature'},{workflowSource:undefined},{workflowSource:'short'},{source:'short'},{checkout:coordinator().workflowSource}])assert.throws(()=>guardContext({...coordinator(),...delta}));
+});
+
+test('CLI context preserves the actual workflow repository and keeps its SHA separate from the application checkout',async()=>{
+ const {contextFromEnvironment,guardContext}=await import('../publication.mjs');
+ const env={GITHUB_REPOSITORY:coordinator().repository,GITHUB_ACTOR:'3899178',GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_REF:'refs/heads/main',GITHUB_SHA:coordinator().workflowSource,CLOUD_MAIL_APPLICATION_SOURCE:source};
+ const c=contextFromEnvironment(env,source);assert.equal(c.repository,env.GITHUB_REPOSITORY);assert.equal(c.workflowSource,env.GITHUB_SHA);assert.equal(c.source,source);assert.equal(guardContext(c),source);
+ assert.throws(()=>guardContext(contextFromEnvironment({...env,CLOUD_MAIL_APPLICATION_SOURCE:undefined},source)));
+ assert.throws(()=>guardContext(contextFromEnvironment(env,env.GITHUB_SHA)));
+ const original=contextFromEnvironment({...env,GITHUB_REPOSITORY:'3899178/cloud-mail',GITHUB_SHA:source,CLOUD_MAIL_APPLICATION_SOURCE:'f'.repeat(40)},source);assert.equal(original.source,source);assert.equal(guardContext(original),source);
+});
+
+test('coordinator acceptance binds build labels to both trusted commits and removes publication tokens',async()=>{
+ const {acceptRelease}=await import('../publication.mjs');let built=false;
+ const receipt=await acceptRelease(coordinator(),{environment:{GITHUB_REPOSITORY:coordinator().repository,GITHUB_SHA:coordinator().workflowSource,CLOUD_MAIL_IMAGE_REPOSITORY:'attacker/other',CLOUD_MAIL_COORDINATOR_SHA:'wrong',GHCR_TOKEN:'SECRET',GITHUB_TOKEN:'SECRET'},run:async(program,args,options)=>{
+  if(program==='bash'){built=true;assert.equal(options.env.GITHUB_SHA,source);assert.equal(options.env.GITHUB_REPOSITORY,coordinator().repository);assert.equal(options.env.CLOUD_MAIL_IMAGE_REPOSITORY,coordinator().repository);assert.equal(options.env.CLOUD_MAIL_COORDINATOR_SHA,coordinator().workflowSource);assert.equal(options.env.GHCR_TOKEN,undefined);assert.equal(options.env.GITHUB_TOKEN,undefined);return ''}
+  return JSON.stringify(coordinatorImage());
+ }});assert(built);assert.deepEqual(receipt,tested());
+});
+
+test('coordinator pushes the accepted image into its own fixed package namespace without rebuilding',async()=>{
+ const {publishTested}=await import('../publication.mjs');const calls=[];
+ const result=await publishTested(coordinator(),tested(),{token:'SECRET',dockerConfig:'/isolated',run:async(program,args,options)=>{calls.push({program,args,options});return args[0]==='image'?JSON.stringify(coordinatorImage()):''}});
+ assert.deepEqual(result,{source,digest,testedImageID});assert.equal(calls.find(c=>c.args[0]==='tag').args[1],testedImageID);assert.equal(calls.find(c=>c.args[0]==='push').args[1],'ghcr.io/3899178/cloud-mail-build/mail-sync:'+source);assert(!calls.some(c=>c.args.includes('build')));assert.equal(calls.at(-1).args[0],'logout');
+});
+
+function coordinatorRegistryFixture(labels={}){
+ const config=Buffer.from(JSON.stringify({os:'linux',architecture:'amd64',config:{User:'10001:10001',Labels:coordinatorImage(labels).Labels}}));
+ const id='sha256:'+createHash('sha256').update(config).digest('hex');
+ const manifest=Buffer.from(JSON.stringify({schemaVersion:2,mediaType:'application/vnd.oci.image.manifest.v1+json',config:{mediaType:'application/vnd.oci.image.config.v1+json',digest:id,size:config.length},layers:[]}));
+ const md='sha256:'+createHash('sha256').update(manifest).digest('hex');const requests=[];
+ const fetch=async(url,options)=>{requests.push({url,options});return new Response(url.includes('/token?')?JSON.stringify({token:'ANONYMOUS_CAPABILITY'}):url.includes('/manifests/')?manifest:config)};
+ const run=async(program,args,options)=>{requests.push({program,args,options});return args[0]==='image'?JSON.stringify({...coordinatorImage(labels),Id:id,RepoDigests:['ghcr.io/3899178/cloud-mail-build/mail-sync@'+md]}):''};
+ return{metadata:{source,digest:md,testedImageID:id},fetch,run,requests};
+}
+
+test('coordinator anonymous verification pulls the same public image from its own package and checks both provenances',async()=>{
+ const {verifyPublic}=await import('../publication.mjs');const f=coordinatorRegistryFixture();
+ assert.deepEqual(await verifyPublic(coordinator(),f.metadata,{fetch:f.fetch,run:f.run,dockerConfig:'/empty'}),f.metadata);
+ assert(f.requests[0].url.includes('scope=repository:3899178/cloud-mail-build/mail-sync:pull'));
+ assert.equal(f.requests.find(c=>c.args?.[0]==='pull').args[1],'ghcr.io/3899178/cloud-mail-build/mail-sync@'+f.metadata.digest);
+});
+
+test('coordinator rejects wrong application source or workflow provenance before pushing or anonymously pulling',async()=>{
+ const {acceptRelease,publishTested,verifyPublic}=await import('../publication.mjs');
+ for(const labels of [{'org.opencontainers.image.source':'https://github.com/3899178/cloud-mail'},{'org.cloudmail.application-source':'https://github.com/attacker/other'},{'org.cloudmail.coordinator-revision':'f'.repeat(40)},{'org.cloudmail.coordinator-revision':undefined},{'org.opencontainers.image.revision':coordinator().workflowSource}]){
+  await assert.rejects(acceptRelease(coordinator(),{run:async p=>p==='docker'?JSON.stringify(coordinatorImage(labels)):''}));
+  let pushed=false;await assert.rejects(publishTested(coordinator(),tested(),{token:'SECRET',dockerConfig:'/empty',run:async(p,a)=>{if(a[0]==='push')pushed=true;return JSON.stringify(coordinatorImage(labels))}}));assert.equal(pushed,false);
+  const f=coordinatorRegistryFixture(labels);await assert.rejects(verifyPublic(coordinator(),f.metadata,{fetch:f.fetch,run:f.run,dockerConfig:'/empty'}));assert(!f.requests.some(c=>c.args?.[0]==='pull'));
  }
 });

@@ -6,6 +6,20 @@ test "$(uname -m)" = x86_64
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 : "${RUNNER_TEMP:?isolated runner directory required}"
+test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+[[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]]
+image_repository="${CLOUD_MAIL_IMAGE_REPOSITORY:-3899178/cloud-mail}"
+case "$image_repository" in
+  3899178/cloud-mail)
+    image_labels=(--label 'org.opencontainers.image.source=https://github.com/3899178/cloud-mail')
+    ;;
+  3899178/cloud-mail-build)
+    test "$GITHUB_REPOSITORY" = "$image_repository"
+    [[ "${CLOUD_MAIL_COORDINATOR_SHA:-}" =~ ^[a-f0-9]{40}$ ]]
+    image_labels=(--label 'org.opencontainers.image.source=https://github.com/3899178/cloud-mail-build' --label 'org.cloudmail.application-source=https://github.com/3899178/cloud-mail' --label "org.cloudmail.coordinator-revision=$CLOUD_MAIL_COORDINATOR_SHA")
+    ;;
+  *) exit 1 ;;
+esac
 NODE_IMAGE='node:24.18.0-bookworm-slim@sha256:d45d78e7929b46875bbd4e29bea672d5bc48186c6c3588306521c815e78352d6'
 docker version --format '{{json .Server}}'
 docker compose version
@@ -19,7 +33,7 @@ NODE="$RUNNER_TEMP/node24"
 CONTEXT="$RUNNER_TEMP/context-$GITHUB_SHA"
 "$NODE" deploy/build-context.mjs "$CONTEXT"
 # The daemon sees only this selected context; never pass repository root.
-docker build --platform linux/amd64 --target runtime --label "org.opencontainers.image.revision=$GITHUB_SHA" --label 'org.opencontainers.image.source=https://github.com/3899178/cloud-mail' -f "$CONTEXT/deploy/Dockerfile" -t cloud-mail:runtime "$CONTEXT"
+docker build --platform linux/amd64 --target runtime --label "org.opencontainers.image.revision=$GITHUB_SHA" "${image_labels[@]}" -f "$CONTEXT/deploy/Dockerfile" -t cloud-mail:runtime "$CONTEXT"
 docker build --platform linux/amd64 --target test -f "$CONTEXT/deploy/Dockerfile" -t cloud-mail:test "$CONTEXT"
 docker run --rm --network none cloud-mail:test
 docker image inspect cloud-mail:runtime --format '{{.Id}} {{json .Config.User}} {{json .Config.Entrypoint}}'
