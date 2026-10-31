@@ -21,3 +21,9 @@ import '../api/public-api'
 import '../api/telegram-api'
 import '../api/oauth-api'
 export default app;
+
+import '../api/session-api';
+
+import '../api/external-api';
+
+import '../api/unified-api';

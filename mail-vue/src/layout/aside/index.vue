@@ -80,15 +80,18 @@ import { useRoute } from "vue-router";
 import {Icon} from "@iconify/vue";
 import {useSettingStore} from "@/store/setting.js";
 import {useUiStore} from "@/store/ui.js";
+import {useUnifiedStore} from '@/store/unified.js'
 
 const settingStore = useSettingStore();
 const uiStore = useUiStore();
+const unifiedStore = useUnifiedStore()
 const route = useRoute();
 const logoUrl = `${import.meta.env.BASE_URL}mail.png`
 const titleUsesDisplayFont = computed(() => !/\p{Script=Han}/u.test(settingStore.settings.title || ''))
 
 function openCompose() {
-  uiStore.writerRef.open()
+  if (route.name === 'unified' && unifiedStore.selection.source === 'external') uiStore.externalComposerRef?.open()
+  else uiStore.writerRef.open()
 }
 
 </script>

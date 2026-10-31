@@ -1,138 +1,32 @@
 import { parseHTML } from 'linkedom';
 import domainUtils from '../utils/domain-uitls';
 
+const escapeAttribute = value => value.replace(/[&<>"']/g, char => ({
+ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+})[char]);
+
 export default function emailHtmlTemplate(html, domain) {
-
-	const { document } = parseHTML(html);
-	document.querySelectorAll('script').forEach(script => script.remove());
-	html = document.toString();
-	html = html.replace(/{{domain}}/g, domainUtils.toOssDomain(domain) + '/');
-	const safeHtmlJson = JSON.stringify(html).replace(/</g, '\\u003C');
-
-	return `<!DOCTYPE html>
-<html lang='en' >
-<head>
-    <meta charset='UTF-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
-    <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            background: #FFF;
-        }
-
-        .content-box {
-        		padding: 15px 10px;
-            width: 100%;
-            height: 100%;
-            overflow: auto; /* 改为 auto 允许滚动 */
-            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        }
-
-        .content-html {
-            width: 100%;
-            height: 100%;
-        }
-    </style>
-</head>
-<body>
-    <div class='content-box'>
-        <div id='container' class='content-html'></div>
-    </div>
-
-    <script>
-
-        function renderHTML(html) {
-            const container = document.getElementById('container');
-            const shadowRoot = container.attachShadow({ mode: 'open' });
-
-            // 提取 <body> 的 style 属性
-            const bodyStyleRegex = /<body[^>]*style="([^"]*)"[^>]*>/i;
-            const bodyStyleMatch = html.match(bodyStyleRegex);
-            const bodyStyle = bodyStyleMatch ? bodyStyleMatch[1] : '';
-
-            // 移除 <body> 标签
-            const cleanedHtml = html.replace(/<\\/?body[^>]*>/gi, '');
-
-            // 渲染内容
-            shadowRoot.innerHTML = \`
-                <style>
-                    :host {
-                        all: initial;
-                        width: 100%;
-                        height: 100%;
-                        font-family: Inter, -apple-system, BlinkMacSystemFont,
-                                    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-                        font-size: 14px;
-                        line-height: 1.5;
-                        color: #13181D;
-                        word-break: break-word;
-                        overflow: auto; /* 添加滚动 */
-                    }
-
-                    h1, h2, h3, h4 {
-                        font-size: 18px;
-                        font-weight: 700;
-                    }
-
-                    p {
-                        margin: 0;
-                    }
-
-                    a {
-                        text-decoration: none;
-                        color: #0E70DF;
-                    }
-
-                    .shadow-content {
-                        background: #FFFFFF;
-                        width: fit-content;
-                        height: fit-content;
-                        min-width: 100%;
-                        \${bodyStyle ? bodyStyle : ''} /* 注入 body 的 style */
-                    }
-
-                    img:not(table img) {
-                        max-width: 100% !important;
-                        height: auto !important;
-                    }
-                </style>
-                <div class="shadow-content">
-                    \${cleanedHtml}
-                </div>
-            \`;
-
-            // 自动缩放
-            autoScale(shadowRoot, container);
-        }
-
-        function autoScale(shadowRoot, container) {
-
-            if (!shadowRoot || !container) return;
-
-            const parent = container;
-            const shadowContent = shadowRoot.querySelector('.shadow-content');
-
-            if (!shadowContent) return;
-
-            const parentWidth = parent.offsetWidth;
-            const childWidth = shadowContent.scrollWidth;
-
-            if (childWidth === 0) return;
-
-            const scale = parentWidth / childWidth;
-
-            const hostElement = shadowRoot.host;
-            hostElement.style.zoom = scale;
-        }
-
-        // 使用示例
-        const exampleHtml = ${safeHtmlJson};
-
-        // 渲染HTML
-        renderHTML(exampleHtml);
-    </script>
-</body>
-</html>`
+ const { document } = parseHTML(html.replace(/{{domain}}/g, domainUtils.toOssDomain(domain) + '/'));
+ // Defense in depth. The opaque, script-disabled iframe below is the
+ // execution boundary; parsed HTML alone is not a sanitizer or a sandbox.
+ document.querySelectorAll('script,iframe,frame,frameset,object,embed,applet,form,input,button,textarea,select,base,meta,link,svg,math').forEach(node => node.remove());
+ for (const node of document.querySelectorAll('*')) {
+  for (const attribute of [...node.attributes]) {
+   if (/^on/i.test(attribute.name)) node.removeAttribute(attribute.name);
+  }
+ }
+ for (const anchor of document.querySelectorAll('a')) {
+  try {
+   const url = new URL(anchor.getAttribute('href'));
+   if (!['https:', 'http:', 'mailto:'].includes(url.protocol)) throw new Error();
+   anchor.setAttribute('href', url.href);
+   anchor.setAttribute('target', '_blank');
+   anchor.setAttribute('rel', 'noopener noreferrer');
+  } catch {
+   anchor.removeAttribute('href');
+   anchor.removeAttribute('target');
+  }
+ }
+ const inner = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html{background:#fff}body{margin:0;padding:15px;box-sizing:border-box;overflow-wrap:anywhere;font-family:system-ui,sans-serif;line-height:1.5}img{max-width:100%;height:auto}table{max-width:100%}pre{white-space:pre-wrap}</style></head><body>${document.toString()}</body></html>`;
+ return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mail</title><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;border:0;width:100%;height:100vh}</style></head><body><iframe title="Mail content" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" srcdoc="${escapeAttribute(inner)}"></iframe></body></html>`;
 }

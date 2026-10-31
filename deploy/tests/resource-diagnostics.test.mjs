@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {existsSync} from 'node:fs';
+test('failed resource stage is saved before refusal with bounded public-only diagnostics',async()=>{
+ assert(existsSync('deploy/fixtures/resource-diagnostics.mjs'),'resource failure diagnostics required');
+ const {recordStage,safeCode,operationRecorder}=await import('../fixtures/resource-diagnostics.mjs');
+ const receipt={stages:[]};const logs=[];
+ const stage={phase:'burst',accounts:[{account:'a49',provider:'proton',status:'error',errorCode:'SYNC_FAILED'}]};
+ assert.throws(()=>recordStage(receipt,stage,value=>logs.push(value)),/RESOURCE_STAGE_FAILED/);assert.equal(receipt.stages.length,1);assert.equal(JSON.parse(logs[0]).accounts[0].errorCode,'SYNC_FAILED');
+ assert.equal(safeCode({code:'SECRET provider body token=credential'}),'UNCLASSIFIED');assert.equal(safeCode({code:'ETIMEDOUT'}),'ETIMEDOUT');
+ const recorder=operationRecorder();for(let i=0;i<100;i++)recorder.failure('proton','a49','fetch',{code:'SECRET token'});
+ const records=recorder.snapshot();assert.equal(records.length,32);assert(records.every(r=>r.code==='UNCLASSIFIED'));assert(!JSON.stringify(records).includes('SECRET'));
+ recorder.failure('unknown-provider-secret','a49','fetch',{code:'SYNC_FAILED'});recorder.failure('imap','credential@example.test','fetch',{code:'SYNC_FAILED'});assert.equal(recorder.snapshot().length,32);
+ assert.equal(recordStage({stages:[]},{phase:'baseline',accounts:[{account:'a0',provider:'imap',status:'active',errorCode:null}]},()=>{}),true);
+});
+test('diagnostic session preserves thrown errors and process receipts exclude unrelated identity',async()=>{
+ const {observeSession,operationRecorder,parseProcessStatus}=await import('../fixtures/resource-diagnostics.mjs');
+ const recorder=operationRecorder();const error=Object.assign(new Error('SECRET token and provider body'),{code:'ECONNRESET'});
+ const session={usable:()=>true,acquire:()=>42,fetch:async()=>{throw error}};
+ const observed=observeSession(session,'imap','a0',recorder);
+ assert.equal(observed.usable(),true);assert.equal(observed.acquire(),42);
+ await assert.rejects(observed.fetch(),actual=>actual===error);
+ assert.deepEqual(recorder.snapshot(),[{provider:'imap',account:'a0',operation:'fetch',code:'ECONNRESET'}]);
+ assert(!JSON.stringify(recorder.snapshot()).includes('SECRET'));
+ const status='Name:\tsupervisor\nUid:\t10001 10001 10001 10001\nVmRSS:\t123 kB\nVmHWM:\t234 kB\n';
+ assert.deepEqual(parseProcessStatus(status,10001),{kind:'supervisor',rssBytes:125952,highWaterBytes:239616});
+ assert.equal(parseProcessStatus(status,0),null);
+ assert.equal(parseProcessStatus(status.replace('supervisor','SECRET'),10001),null);
+ assert.equal(parseProcessStatus(status.replace('10001 10001 10001 10001','10001 0 10001 10001'),10001),null);
+});

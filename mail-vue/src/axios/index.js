@@ -1,20 +1,31 @@
+import { session } from '@/auth/session.js';
+import { isStaleSession } from '@/auth/session-core.mjs';
+import { installSessionFence } from '@/auth/http-session.mjs';
 import axios from "axios";
 import router from "@/router";
 import i18n from "@/i18n/index.js";
 import {useSettingStore} from "@/store/setting.js";
 
 let http = axios.create({
-    baseURL: import.meta.env.VITE_BASE_URL
+    baseURL: import.meta.env.VITE_BASE_URL,
+    withCredentials: true
 });
+
+installSessionFence(http, session);
 
 http.interceptors.request.use(config => {
     const { lang } = useSettingStore();
-    config.headers.Authorization = `${localStorage.getItem('token')}`
+    if (session.csrfToken && !['get','head','options'].includes((config.method || 'get').toLowerCase())) config.headers['X-CSRF-Token'] = session.csrfToken;
     config.headers['accept-language'] = lang
     return config
 })
 
 http.interceptors.response.use((res) => {
+        // Check again at the state-writing consumer, after earlier interceptor microtasks.
+        res.config.sessionLease?.assertCurrent();
+        // Owned local attachment imports use a bounded streaming consumer. Keep
+        // the same HTTP/session fence without treating original bytes as JSON.
+        if (res.config.ownedAttachmentStream) return res.data;
 
         return new Promise((resolve, reject) => {
 
@@ -33,7 +44,7 @@ http.interceptors.response.use((res) => {
                     grouping: true,
                     repeatNum: -4,
                 })
-                localStorage.removeItem('token')
+                session.reset()
                 router.replace('/login')
                 reject(data)
             } else if (data.code === 403) {
@@ -70,13 +81,16 @@ http.interceptors.response.use((res) => {
         })
     },
     (error) => {
+        error.config?.sessionLease?.assertCurrent();
 
-        if (error.status === 403) {
-            location.reload();
-            return;
+        if (isStaleSession(error)) return Promise.reject(error);
+
+        if (error.response?.status === 401 && (error.response?.data?.error?.code === 'UNAUTHORIZED' || error.config?.ownedAttachmentStream)) {
+            session.reset();
+            router.replace('/login');
         }
 
-        const noMsg = error.config.noMsg;
+        const noMsg = error.config?.noMsg;
 
         if (noMsg) {
             return Promise.reject(error)

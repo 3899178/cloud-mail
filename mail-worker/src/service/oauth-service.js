@@ -1,7 +1,8 @@
+import JwtUtils from '../utils/jwt-utils';
 import BizError from "../error/biz-error";
 import orm from "../entity/orm";
 import {oauth} from "../entity/oauth";
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import userService from "./user-service";
 import loginService from "./login-service";
 import cryptoUtils from "../utils/crypto-utils";
@@ -13,8 +14,13 @@ const oauthService = {
 	async bindUser(c, params) {
 
 		const { email, oauthUserId, code } = params;
+		const proof = await JwtUtils.verifyToken(c, params.bindingProof);
+		if (!proof || proof.purpose !== 'oauth-bind' || proof.oauthUserId !== oauthUserId || !proof.platform || !proof.oauthId || !proof.exp) {
+			throw new BizError('UNAUTHORIZED', 401);
+		}
 
-		const oauthRow = await this.getById(c, oauthUserId);
+		const oauthRow = await this.getById(c, oauthUserId, proof.platform);
+		if (!oauthRow || oauthRow.oauthId !== proof.oauthId) throw new BizError('UNAUTHORIZED',401);
 
 		let userRow = await userService.selectByIdIncludeDel(c, oauthRow.userId);
 
@@ -22,11 +28,10 @@ const oauthService = {
 			throw new BizError('用户已绑定有邮箱')
 		}
 
-		await loginService.register(c, { email, password: cryptoUtils.genRandomPwd(), code }, true);
+		await loginService.register(c, { email, password: cryptoUtils.genRandomPwd(), code }, true, undefined, oauthRow);
 
 		userRow = await userService.selectByEmail(c, email);
 
-		orm(c).update(oauth).set({ userId: userRow.userId }).where(eq(oauth.oauthUserId, oauthUserId)).run();
 		const jwtToken = await loginService.login(c, { email, password: null }, true);
 
 		return { userInfo: oauthRow, token: jwtToken}
@@ -185,7 +190,13 @@ const oauthService = {
 		const userRow = await userService.selectByIdIncludeDel(c, oauthRow.userId);
 
 		if (!userRow) {
-			return { userInfo: oauthRow, token: null };
+			const bindingProof = await JwtUtils.generateToken(c, {
+				purpose: 'oauth-bind',
+				oauthId: oauthRow.oauthId,
+				platform: oauthRow.platform,
+				oauthUserId: oauthRow.oauthUserId
+			}, 300);
+			return { userInfo: oauthRow, token: null, bindingProof };
 		}
 
 		const JwtToken = await loginService.login(c, { email: userRow.email, password: null }, true);
@@ -194,13 +205,17 @@ const oauthService = {
 
 	async saveUser(c, userInfo) {
 
-		const userInfoRow = await this.getById(c, userInfo.oauthUserId);
-
-		if (!userInfoRow) {
-			return await orm(c).insert(oauth).values(userInfo).returning().get();
-		} else {
-			return await orm(c).update(oauth).set(userInfo).where(eq(oauth.oauthUserId, userInfo.oauthUserId)).returning().get();
+		if (!['google','github','linuxdo'].includes(userInfo.platform)) throw new BizError('UNAUTHORIZED',401);
+		// Conditional insert serializes concurrent first logins without altering legacy schema.
+		await c.env.db.prepare('INSERT INTO oauth(oauth_user_id,platform) SELECT ?,? WHERE NOT EXISTS(SELECT 1 FROM oauth WHERE oauth_user_id=? AND platform=?)')
+			.bind(userInfo.oauthUserId,userInfo.platform,userInfo.oauthUserId,userInfo.platform).run();
+		const row = await this.getById(c,userInfo.oauthUserId,userInfo.platform);
+		const profile = {};
+		for (const key of ['username', 'name', 'avatar', 'active', 'trustLevel', 'silenced']) {
+			if (userInfo[key] !== undefined) profile[key] = userInfo[key];
 		}
+		if (Object.keys(profile).length) return orm(c).update(oauth).set(profile).where(eq(oauth.oauthId,row.oauthId)).returning().get();
+		return row;
 
 	},
 
@@ -210,8 +225,8 @@ const oauthService = {
 		}
 	},
 
-	async getById(c, oauthUserId) {
-		return await orm(c).select().from(oauth).where(eq(oauth.oauthUserId, oauthUserId)).get();
+	async getById(c, oauthUserId, platform) {
+		return await orm(c).select().from(oauth).where(and(eq(oauth.oauthUserId, oauthUserId),eq(oauth.platform,platform))).get();
 	},
 
 	async deleteByUserId(c, userId) {

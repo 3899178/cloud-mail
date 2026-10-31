@@ -1,0 +1,146 @@
+{
+  "source": "https://codeberg.org/emersion/hydroxide",
+  "revision": "02b3b6c8aff726d2404b6ed5f6ba1b7937e1f30e",
+  "module": "github.com/emersion/hydroxide",
+  "copiedPackages": [
+    "protonmail"
+  ],
+  "license": "MIT Copyright (c) 2017 emersion",
+  "sourceFiles": [
+    {
+      "path": "protonmail/addresses.go",
+      "originalSha256": "3c2d3011c7927774bc684f2d0cfa6ff3075d414d3ab2e387823ae4106bd55946",
+      "productSha256": "3c2d3011c7927774bc684f2d0cfa6ff3075d414d3ab2e387823ae4106bd55946",
+      "patched": false
+    },
+    {
+      "path": "protonmail/attachments.go",
+      "originalSha256": "f4634b2a7380d35aae2b02d8392e04ac6f8787a8f41b7107395e114f143ba6ff",
+      "productSha256": "f4634b2a7380d35aae2b02d8392e04ac6f8787a8f41b7107395e114f143ba6ff",
+      "patched": false
+    },
+    {
+      "path": "protonmail/auth.go",
+      "originalSha256": "0e5fccd9677d0b522a5e477e753344bd78d3af9872d000e442798cf2d8c0620e",
+      "productSha256": "dbc15bb033f65c8c6f5a60694a986b9cc302d4344dfaa22612d2843a63074d4e",
+      "patched": true
+    },
+    {
+      "path": "protonmail/calendar.go",
+      "originalSha256": "72054ae310c5beba4ca6aa56c7604a0dcb28b2ef737e8ac6cd9c5661ffb0c49c",
+      "productSha256": "72054ae310c5beba4ca6aa56c7604a0dcb28b2ef737e8ac6cd9c5661ffb0c49c",
+      "patched": false
+    },
+    {
+      "path": "protonmail/contacts.go",
+      "originalSha256": "fb514c766c4bccb5f03662b1d79705bd7d636dfc655f90b1b81dec3e1b48178a",
+      "productSha256": "fb514c766c4bccb5f03662b1d79705bd7d636dfc655f90b1b81dec3e1b48178a",
+      "patched": false
+    },
+    {
+      "path": "protonmail/conversations.go",
+      "originalSha256": "06771ce06c806737af89f37df05dfcf0ba8882b460be0b940bf4a0d1d15678b1",
+      "productSha256": "06771ce06c806737af89f37df05dfcf0ba8882b460be0b940bf4a0d1d15678b1",
+      "patched": false
+    },
+    {
+      "path": "protonmail/crypto.go",
+      "originalSha256": "3c61f6c9dc63b074ce39c07cc83cb7124355e8492f91b267977c1fc72e2c29f8",
+      "productSha256": "3c61f6c9dc63b074ce39c07cc83cb7124355e8492f91b267977c1fc72e2c29f8",
+      "patched": false
+    },
+    {
+      "path": "protonmail/events.go",
+      "originalSha256": "ce46c1e724ac40baf29f4e515fe64f2535a7b8eae854643887bfa44089d1b9ca",
+      "productSha256": "354b682cf7f79dee906d4ebf8962c7aeb95b75b594ce3b2acfca523c773a2464",
+      "patched": true
+    },
+    {
+      "path": "protonmail/import.go",
+      "originalSha256": "27584f0af584ab7d611ed1119034447441dd614e4e281412c35e615b94790f78",
+      "productSha256": "27584f0af584ab7d611ed1119034447441dd614e4e281412c35e615b94790f78",
+      "patched": false
+    },
+    {
+      "path": "protonmail/keys.go",
+      "originalSha256": "111fbd9c51a3958ae6e5e7dcbd9d44ca163f33e5cc77e3d50019be96cf656559",
+      "productSha256": "111fbd9c51a3958ae6e5e7dcbd9d44ca163f33e5cc77e3d50019be96cf656559",
+      "patched": false
+    },
+    {
+      "path": "protonmail/labels.go",
+      "originalSha256": "013eb0ae26bfd8a3fb46ca585c93b20b0534572fb1636eb1eda7670c96f93547",
+      "productSha256": "013eb0ae26bfd8a3fb46ca585c93b20b0534572fb1636eb1eda7670c96f93547",
+      "patched": false
+    },
+    {
+      "path": "protonmail/messages.go",
+      "originalSha256": "8cc065be789b0282a301dcf77911edd236cbc89e6e6cc1abdf307d7e455355d4",
+      "productSha256": "bd64c30e866cb2fafea31e29d5726cde129a1ee13306f042eac05fb02221d77e",
+      "patched": true
+    },
+    {
+      "path": "protonmail/password.go",
+      "originalSha256": "0814980d0e474fb462ba19b41584648b1818c0b1873e2c6ade0df129d7cee684",
+      "productSha256": "0814980d0e474fb462ba19b41584648b1818c0b1873e2c6ade0df129d7cee684",
+      "patched": false
+    },
+    {
+      "path": "protonmail/protonmail.go",
+      "originalSha256": "52c60b31624bc9cc00490aa3910bbbf95a0d4c5c4ab81a1d64c1a702e5215fd4",
+      "productSha256": "52c60b31624bc9cc00490aa3910bbbf95a0d4c5c4ab81a1d64c1a702e5215fd4",
+      "patched": false
+    },
+    {
+      "path": "protonmail/srp.go",
+      "originalSha256": "0175b5673fc0bc324364fd5857fa4da6d57732e22949b9b253f432250fd83fdc",
+      "productSha256": "0175b5673fc0bc324364fd5857fa4da6d57732e22949b9b253f432250fd83fdc",
+      "patched": false
+    },
+    {
+      "path": "protonmail/users.go",
+      "originalSha256": "f85310ee9cfa4430b06d7e2488ec19810647533891ffe9cd7def228979cfe99c",
+      "productSha256": "f85310ee9cfa4430b06d7e2488ec19810647533891ffe9cd7def228979cfe99c",
+      "patched": false
+    },
+    {
+      "path": "LICENSE",
+      "originalSha256": "f6a0bb70539f38556b1ed03c35a965fda1db9feeaceb63138843258ca0ca9709",
+      "productSha256": "f6a0bb70539f38556b1ed03c35a965fda1db9feeaceb63138843258ca0ca9709",
+      "patched": false
+    },
+    {
+      "path": "go.mod",
+      "originalSha256": "3fce48fd0460f8376259fd6c3210823c58eddebd5345e813f19d715575b64a6f",
+      "productSha256": "3fce48fd0460f8376259fd6c3210823c58eddebd5345e813f19d715575b64a6f",
+      "patched": false
+    },
+    {
+      "path": "go.sum",
+      "originalSha256": "0ade444265cd0c332e189ab9a430d2c805f67a63a6563fef5f358be69afc21ca",
+      "productSha256": "0ade444265cd0c332e189ab9a430d2c805f67a63a6563fef5f358be69afc21ca",
+      "patched": false
+    }
+  ],
+  "patches": [
+    {
+      "path": "protonmail/auth.go",
+      "reason": "Bound private-key token decompression and plaintext read to 64KiB before allocation"
+    },
+    {
+      "path": "protonmail/messages.go",
+      "reason": "Require successful nested batch mutation responses with exact ID coverage; Task7a: serialize existing ID filter as IDs[] for bounded exact-ID metadata reads"
+    },
+    {
+      "path": "protonmail/events.go",
+      "reason": "Task7a: expose presence-aware More and raw Labels; fix I1: require present non-null known message Action before a delta can grant removal",
+      "diff": "../../task7a-client.patch"
+    }
+  ],
+  "localAdditions": [
+    "protonmail/auth_bounds_test.go",
+    "protonmail/message_actions_test.go",
+    "protonmail/event_actions_test.go"
+  ],
+  "originalHashSource": "Exact git blob bytes at the pinned revision (not Windows autocrlf checkout bytes)"
+}

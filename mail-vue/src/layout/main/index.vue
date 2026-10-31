@@ -1,16 +1,13 @@
 <template>
-  <div :class="accountShow && hasPerm('account:query') ? 'main-box-show' : 'main-box-hide'">
-    <div :class="accountShow && hasPerm('account:query') ? 'block-show' : 'block-hide'" @click="uiStore.accountShow = false"></div>
-    <account  :class="accountShow && hasPerm('account:query') ? 'show' : 'hide'" />
+  <main class="main-content">
     <router-view class="main-view" v-slot="{ Component,route }">
       <keep-alive :include="['email','all-email','send','sys-setting','star','user','role','analysis','reg-key','draft']">
         <component :is="Component" :key="route.name"/>
       </keep-alive>
     </router-view>
-  </div>
+  </main>
 </template>
 <script setup>
-import account from '@/layout/account/index.vue'
 import {useUiStore} from "@/store/ui.js";
 import {useSettingStore} from "@/store/setting.js";
 import {computed, onBeforeUnmount, onMounted, watch} from "vue";
@@ -100,81 +97,7 @@ const handleResize = () => {
 }
 
 </script>
-<style lang="scss" scoped>
-
-.block-show {
-  position: fixed;
-  @media (max-width: 767px) {
-    position: absolute;
-    right: 0;
-    border: 0;
-    height: 100%;
-    width: 100%;
-    background: #000000;
-    opacity: 0.6;
-    z-index: 10;
-    transition: all 300ms;
-  }
-}
-
-.block-hide {
-  position: fixed;
-  pointer-events: none;
-  transition: all 300ms;
-}
-
-.show {
-  transition: all 100ms;
-  @media (max-width: 767px) {
-    position: fixed;
-    z-index: 100;
-    width: 260px;
-  }
-}
-
-.hide {
-  transition: all 100ms;
-  position: fixed;
-  transform: translateX(-100%);
-  opacity: 0;
-  @media (max-width: 1024px) {
-    width: 260px;
-    z-index: 100;
-  }
-}
-
-
-.main-box-show {
-  display: grid;
-  grid-template-columns: 260px  1fr;
-  height: calc(100% - 60px);
-  @media (max-width: 767px) {
-    grid-template-columns: 1fr;
-  }
-}
-
-.main-box-hide {
-  display: grid;
-  grid-template-columns: 1fr;
-  height: calc(100% - 60px);
-}
-
-
-.main-view {
-  background: var(--el-bg-color);
-}
-
-
-.navigation {
-  height: 30px;
-  border-bottom: solid 1px var(--el-menu-border-color);
-  display: inline-flex;
-  justify-items: center;
-  align-items: center;
-  width: 100%;
-  .tag {
-    background: var(--el-bg-color);
-    margin-left: 5px;
-  }
-}
+<style scoped>
+.main-content{height:100%;min-height:0;min-width:0;overflow:hidden;display:flex;flex-direction:column}
+.main-view{background:var(--el-bg-color);height:100%;min-height:0;min-width:0;overflow:hidden}
 </style>

@@ -19,15 +19,18 @@ import dayjs from 'dayjs';
 import { toUtc } from '../utils/date-uitil';
 import { t } from '../i18n/i18n.js';
 import verifyRecordService from './verify-record-service';
+import { registrationStatements, commitBulkRegistrations, loadRegistrationContexts } from './registration-batch';
 
 const loginService = {
 
-	async register(c, params, oauth = false) {
+	async prepareRegistration(c, params, oauth = false, privilegedType, binding, context) {
 
 		const { email, password, token, code } = params;
 
 		let { regKey, register, registerVerify, regVerifyCount, minEmailPrefix, emailPrefixFilter } = await settingService.query(c)
 
+		// Every new user, including privileged creation, requires an owner-issued invitation.
+		regKey = settingConst.regKey.OPEN;
 		if (oauth) {
 			registerVerify = settingConst.registerVerify.CLOSE;
 			register = settingConst.register.OPEN;
@@ -69,7 +72,7 @@ const loginService = {
 		let regKeyId = 0
 
 		if (regKey === settingConst.regKey.OPEN) {
-			const result = await this.handleOpenRegKey(c, regKey, code)
+			const result = await this.handleOpenRegKey(c, regKey, code, context?.invitation)
 			type = result?.type
 			regKeyId = result?.regKeyId
 		}
@@ -80,7 +83,8 @@ const loginService = {
 			regKeyId = result?.regKeyId
 		}
 
-		const accountRow = await accountService.selectByEmailIncludeDel(c, email);
+		if (privilegedType !== undefined && privilegedType !== null) type = privilegedType;
+		const accountRow = context ? context.account : await accountService.selectByEmailIncludeDel(c, email);
 
 		if (accountRow && accountRow.isDel === isDel.DELETE) {
 			throw new BizError(t('isDelUser'));
@@ -93,12 +97,12 @@ const loginService = {
 		let defType = null
 
 		if (!type) {
-			const roleRow = await roleService.selectDefaultRole(c);
+			const roleRow = context ? context.defaultRole : await roleService.selectDefaultRole(c);
 			defType = roleRow.roleId
 		}
 
 
-		const roleRow = await roleService.selectById(c, type || defType);
+		const roleRow = context ? context.role : await roleService.selectById(c, type || defType);
 
 		if(!roleService.hasAvailDomainPerm(roleRow.availDomain, email)) {
 
@@ -128,35 +132,15 @@ const loginService = {
 
 		const { salt, hash } = await saltHashUtils.hashPassword(password);
 
-		let consumedCode = null
-		const usingRegKey = regKey !== settingConst.regKey.CLOSE && type
+		return { email, code, regKeyId, type: type || defType, hash, salt, binding, registerVerify, regVerifyOpen, regVerifyCount };
+	},
 
-		if (usingRegKey && !await regKeyService.consumeCount(c, code)) {
-			if (regKey === settingConst.regKey.OPEN) {
-				throw new BizError(t('noRegKeyCount'))
-			}
-			type = null
-			regKeyId = 0
-			defType = await this.useDefaultRole(c, email)
-		}
-
-		if (usingRegKey && type) {
-			consumedCode = code
-		}
-
-		let userId
-
-		try {
-			userId = await userService.insert(c, { email, regKeyId, password: hash, salt, type: type || defType });
-			await accountService.insert(c, { userId: userId, email, name: emailUtils.getName(email) });
-		} catch (error) {
-			if (consumedCode) {
-				await regKeyService.restoreCount(c, consumedCode)
-			}
-			throw error
-		}
-
-		await userService.updateUserInfo(c, userId, true);
+	async register(c, params, oauth = false, privilegedType, binding) {
+		const row = await this.prepareRegistration(c, params, oauth, privilegedType, binding);
+		const [created] = await c.env.db.batch(registrationStatements(c, row));
+		const userId = created.results[0]?.user_id;
+		if (!userId) throw new BizError('REGISTRATION_CONFLICT',409);
+		const { registerVerify, regVerifyOpen, regVerifyCount } = row;
 
 		if (registerVerify === settingConst.registerVerify.COUNT && !regVerifyOpen) {
 			const row = await verifyRecordService.increaseRegCount(c);
@@ -167,17 +151,26 @@ const loginService = {
 
 	},
 
+	async registerMany(c, list) {
+		const contexts = await loadRegistrationContexts(c, list);
+		const rows = [];
+		for (const [index, params] of list.entries()) {
+			rows.push(await this.prepareRegistration(c, params, true, contexts[index].privilegedType, undefined, contexts[index]));
+		}
+		await commitBulkRegistrations(c, rows);
+	},
+
 	async registerVerify() {
 
 	},
 
-	async handleOpenRegKey(c, regKey, code) {
+	async handleOpenRegKey(c, regKey, code, invitation) {
 
 		if (!code) {
 			throw new BizError(t('emptyRegKey'));
 		}
 
-		const regKeyRow = await regKeyService.selectByCode(c, code);
+		const regKeyRow = invitation === undefined ? await regKeyService.selectByCode(c, code) : invitation;
 
 		if (!regKeyRow) {
 			throw new BizError(t('notExistRegKey'));
@@ -282,7 +275,7 @@ const loginService = {
 		const token = await userContext.getToken(c);
 		const authInfo = await c.env.kv.get(KvConst.AUTH_INFO + userId, { type: 'json' });
 		const index = authInfo.tokens.findIndex(item => item === token);
-		authInfo.tokens.splice(index, 1);
+		if (index >= 0) authInfo.tokens.splice(index, 1);
 		await c.env.kv.put(KvConst.AUTH_INFO + userId, JSON.stringify(authInfo), { expirationTtl: constant.TOKEN_EXPIRE });
 	}
 

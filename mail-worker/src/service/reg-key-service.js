@@ -92,7 +92,7 @@ const regKeyService = {
 	async consumeCount(c, code) {
 		const rows = await orm(c).update(regKey)
 			.set({ count: sql`${regKey.count} - 1` })
-			.where(and(eq(regKey.code, code), gt(regKey.count, 0)))
+			.where(and(eq(regKey.code, code), gt(regKey.count, 0), sql`datetime(${regKey.expireTime}) > CURRENT_TIMESTAMP`))
 			.returning({ regKeyId: regKey.regKeyId });
 		return rows.length > 0;
 	},

@@ -7,6 +7,7 @@ import userService from '../service/user-service';
 import permService from '../service/perm-service';
 import { t } from '../i18n/i18n'
 import app from '../hono/hono';
+import { requestToken, enforceCookieWrite, sameOrigin, callbackPaths } from './session';
 
 const exclude = [
 	'/login',
@@ -93,8 +94,10 @@ app.use('*', async (c, next) => {
 
 	const path = c.req.path;
 
+	if (callbackPaths.has(path) && c.req.method === 'GET') return next();
+	if (['/login', '/register'].includes(path) || path.startsWith('/oauth/')) sameOrigin(c);
 	const index = exclude.findIndex(item => {
-		return path.startsWith(item);
+		return path === item || path.startsWith(item + '/');
 	});
 
 	if (index > -1) {
@@ -112,7 +115,7 @@ app.use('*', async (c, next) => {
 	}
 
 
-	const jwt = c.req.header(constant.TOKEN_HEADER);
+	const jwt = requestToken(c);
 
 	const result = await jwtUtils.verifyToken(c, jwt);
 
@@ -160,7 +163,9 @@ app.use('*', async (c, next) => {
 		await c.env.kv.put(KvConst.AUTH_INFO + userId, JSON.stringify(authInfo), { expirationTtl: constant.TOKEN_EXPIRE });
 	}
 
-	c.set('user',authInfo.user)
+	c.set('user',authInfo.user);
+	c.set('authClaims', result);
+	await enforceCookieWrite(c, result);
 
 	return await next();
 });

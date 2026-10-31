@@ -153,6 +153,8 @@
 </template>
 
 <script setup>
+import { session } from "@/auth/session.js";
+import { ownerSession } from '@/auth/owner.js';
 import router from "@/router";
 import {useRoute} from "vue-router";
 import {computed, nextTick, reactive, ref} from "vue";
@@ -205,6 +207,7 @@ const oauthProviders = computed(() => {
 const bindForm = reactive({
   email: '',
   oauthUserId: '',
+  bindingProof: '',
   code: ''
 })
 
@@ -342,9 +345,10 @@ async function oauthGetUser() {
   sessionStorage.removeItem('oauthProvider')
   window.history.replaceState({}, '', window.location.origin + window.location.pathname)
 
-  loginFns[provider](code, window.location.origin + '/login').then(data => {
+  loginFns[provider](code, window.location.origin + '/login').then(async data => {
 
     bindForm.oauthUserId = data.userInfo.oauthUserId;
+    bindForm.bindingProof = data.bindingProof || "";
 
     if (!data.token) {
       showBindForm.value = true
@@ -358,7 +362,7 @@ async function oauthGetUser() {
       return;
     }
 
-    saveToken(data.token);
+    await saveToken(data.token);
   }).catch(() => {
     oauthLoading.value = false
   })
@@ -413,11 +417,11 @@ function bind() {
 
   }
 
-  const form = {email, oauthUserId: bindForm.oauthUserId, code: bindForm.code}
+  const form = {email, oauthUserId: bindForm.oauthUserId, code: bindForm.code, bindingProof: bindForm.bindingProof}
 
   bindLoading.value = true
-  oauthBindUser(form).then(data => {
-    saveToken(data.token)
+  oauthBindUser(form).then(async data => {
+    await saveToken(data.token)
   }).catch(() => {
     bindLoading.value = false
   })
@@ -465,16 +469,9 @@ const submit = () => {
 }
 
 async function saveToken(token) {
-  localStorage.setItem('token', token)
+  await session.adopt(token)
   refreshWebsiteConfig()
-  const user = await loginUserInfo();
-  accountStore.currentAccountId = user.account.accountId;
-  accountStore.currentAccount = user.account;
-  userStore.user = user;
-  const routers = permsToRouter(user.permKeys);
-  routers.forEach(routerData => {
-    router.addRoute('layout', routerData);
-  });
+  await ownerSession().load(loginUserInfo);
   await router.replace({name: 'layout'})
   uiStore.showNotice()
   oauthLoading.value = false;

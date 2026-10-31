@@ -26,3 +26,14 @@ mail-vue/dist
 .wrangler
 .venv
 git-tools.js
+
+# Local implementation state and credentials must never be published.
+.superpowers/
+.data/
+**/.data/
+.env.local
+**/.env.local
+*.secrets.env
+*.jks
+*.keystore
+*.p12

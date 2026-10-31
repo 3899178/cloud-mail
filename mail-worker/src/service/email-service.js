@@ -738,7 +738,7 @@ const emailService = {
 
 		for (const attachment of attachments) {
 			const content = await this.toAttachmentBase64(attachment);
-			if (!content) {
+			if (content == null) {
 				continue;
 			}
 
@@ -757,7 +757,7 @@ const emailService = {
 
 		for (const attachment of attachments) {
 			const content = await this.toAttachmentArrayBuffer(attachment);
-			if (!content) {
+			if (content == null) {
 				continue;
 			}
 
@@ -770,7 +770,7 @@ const emailService = {
 	async toAttachmentBase64(attachment) {
 		let content = attachment.content;
 
-		if (!content) {
+		if (content == null) {
 			return null;
 		}
 
@@ -799,7 +799,7 @@ const emailService = {
 	async toAttachmentArrayBuffer(attachment) {
 		let content = attachment.content;
 
-		if (!content) {
+		if (content == null) {
 			return null;
 		}
 
@@ -818,7 +818,7 @@ const emailService = {
 			return fileUtils.base64ToUint8Array(content.replace(/\s+/g, '')).buffer;
 		}
 
-		return content;
+		return null;
 	},
 
 	//处理站内邮件发送

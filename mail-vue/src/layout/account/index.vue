@@ -130,6 +130,7 @@
 <script setup>
 import {Icon} from "@iconify/vue";
 import {computed, nextTick, reactive, ref, watch} from "vue";
+import {session} from '@/auth/session.js'
 import {
   accountList,
   accountAdd,
@@ -150,6 +151,7 @@ import {AccountAllReceiveEnum} from "@/enums/account-enum.js";
 import {reloadTurnstileScript} from "@/utils/turnstile-script.js";
 
 const {t} = useI18n();
+const emit = defineEmits(['select','accounts'])
 const userStore = useUserStore();
 const accountStore = useAccountStore();
 const settingStore = useSettingStore();
@@ -158,6 +160,8 @@ const showAdd = ref(false)
 const addLoading = ref(false);
 const domainList = computed(() => settingStore.domainList)
 const accounts = reactive([])
+const accountPanelLease=session.lease()
+watch(accounts, list=>{if(accountPanelLease.current())emit('accounts',list.map(account=>({accountId:account.accountId,address:account.email,name:account.name})))},{deep:true})
 const noLoading = ref(false)
 const loading = ref(false)
 const followLoading = ref(false);
@@ -369,6 +373,7 @@ function refresh() {
 function changeAccount(account) {
   accountStore.currentAccountId = account.accountId
   accountStore.currentAccount = account
+  emit('select', account)
 }
 
 function add() {
@@ -414,6 +419,7 @@ async function copyAccount(account) {
 function getAccountList() {
 
   if (loading.value || followLoading.value || noLoading.value) return;
+  const lease=session.lease()
 
   if (accounts.length === 0) {
     loading.value = true
@@ -433,6 +439,7 @@ function getAccountList() {
     if (duration < 300) {
       await sleep(300 - duration)
     }
+    lease.assertCurrent()
 
     if (list.length < queryParams.size) {
       noLoading.value = true
@@ -447,6 +454,7 @@ function getAccountList() {
     followLoading.value = false
     first = false
   }).catch(() => {
+    if(!lease.current())return
     loading.value = false
     followLoading.value = false
   })
