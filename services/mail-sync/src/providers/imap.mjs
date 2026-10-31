@@ -6,6 +6,12 @@ import { fail } from '../../../../shared/unified-mail/index.mjs';
 import { resolvePublicEndpoint } from './network.mjs';
 
 const hosts = { gmail: ['imap.gmail.com', 'smtp.gmail.com', 465], outlook: ['outlook.office365.com', 'smtp-mail.outlook.com', 587], qq: ['imap.qq.com', 'smtp.qq.com', 465], icloud: ['imap.mail.me.com', 'smtp.mail.me.com', 587], '163': ['imap.163.com', 'smtp.163.com', 465], '126': ['imap.126.com', 'smtp.126.com', 465], yeah: ['imap.yeah.net', 'smtp.yeah.net', 465] };
+// FETCH yields one response at a time with ImapFlow backpressure. Larger
+// ranges reduce network round trips; parser and total-catalog limits still apply.
+const metadataBatchSize = 1000;
+// Explicit UID lists can contain sparse 10-digit IDs. Keep their commands
+// comfortably below common server line limits instead of using range sizing.
+const hydrationBatchSize = 100;
 export function mailConfig(provider, manual) {
   const h = hosts[provider];
   const config = manual || (h && { imap: { host: h[0], port: 993, secure: true }, smtp: { host: h[1], port: h[2], secure: h[2] === 465, requireTLS: h[2] !== 465 } });
@@ -46,8 +52,8 @@ export async function createImapSession({ account, config, auth, signal, endpoin
   async function scan(query, options = {}) {
     const rows = []; const exists = client.mailbox.exists; let bytes = 0;
     if (exists > 20000) fail('CAPACITY_EXCEEDED');
-    for (let start = 1; start <= exists; start += 100) {
-      for await (const m of client.fetch(`${start}:${Math.min(exists, start + 99)}`, query, options)) {
+    for (let start = 1; start <= exists; start += metadataBatchSize) {
+      for await (const m of client.fetch(`${start}:${Math.min(exists, start + metadataBatchSize - 1)}`, query, options)) {
         const row = { uid: m.uid, flags: m.flags, labels: m.labels, emailId: m.emailId, ...(query.envelope ? { record: metadata(m) } : {}) };
         bytes += Buffer.byteLength(JSON.stringify(row));
         if (rows.length >= 20000 || bytes > 8 * 1024 * 1024) fail('CAPACITY_EXCEEDED');
@@ -100,8 +106,8 @@ export async function createImapSession({ account, config, auth, signal, endpoin
           for (const m of light.filter(normalMessage)) {
             const old = known.get(String(m.uid)); if (old) old.unread = !m.flags?.has('\\Seen'); else added.push(String(m.uid));
           }
-          for (let i = 0; i < added.length; i += 100) {
-            const batch = added.slice(i, i + 100); const pending = new Set(batch);
+          for (let i = 0; i < added.length; i += hydrationBatchSize) {
+            const batch = added.slice(i, i + hydrationBatchSize); const pending = new Set(batch);
             for await (const m of client.fetch(batch.join(','), fullQuery, { uid: true })) {
               if (!pending.delete(String(m.uid))) fail('SYNC_FAILED');
               if (normalMessage(m)) known.set(String(m.uid), metadata(m));

@@ -26,6 +26,10 @@ export async function imapFixture(t) {
         const end = buffer.indexOf('\r\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 2);
         state.commands.push(line.replace(/LOGIN .*/, 'LOGIN [redacted]'));
         const [tag, rawCommand] = line.split(' '); const command = rawCommand?.toUpperCase();
+        if (state.maxCommandBytes && Buffer.byteLength(line + '\r\n') > state.maxCommandBytes) {
+          socket.write(`${tag} BAD command exceeds fixture limit\r\n`);
+          continue;
+        }
         const ok = () => socket.write(`${tag} OK completed\r\n`);
         if (command === 'CAPABILITY') { socket.write(`* CAPABILITY IMAP4rev1 UIDPLUS MOVE${state.condstore ? ' ENABLE CONDSTORE' : ''}${state.gmail ? ' X-GM-EXT-1' : ''}\r\n`); ok(); }
         else if (command === 'ENABLE') { socket.write('* ENABLED CONDSTORE\r\n'); ok(); }
