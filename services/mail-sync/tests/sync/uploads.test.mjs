@@ -60,6 +60,14 @@ test('request abort removes the partial file and destroys its handle',async t=>{
  const {store,options}=await fixture(t);account(store);const app=createSyncApp({store,gatewayKey:key});t.after(()=>app.services.close());
  const r=await call(app,'/v1/uploads',{accountId:'acc-1',filename:'a',size:2,sha256:'00'.repeat(32)});const {upload}=await r.json();const path='/v1/uploads/'+upload.id;
  const abort=new AbortController();let began;const ready=new Promise(r=>began=r);const stream=new ReadableStream({pull(c){c.enqueue(new Uint8Array([1]));began();return new Promise(()=>{});}});
- const receiving=app.request(new Request('https://sync.test'+path,{method:'PUT',duplex:'half',body:stream,signal:abort.signal,headers:{'x-upload-capability':upload.capability,'x-gateway-assertion':await signGatewayAssertion({key,ownerId:owner,method:'PUT',path})}}));await ready;await new Promise(r=>setTimeout(r,10));abort.abort();assert.notEqual((await receiving).status,200);assert.equal(readdirSync(options.dataDir,{recursive:true}).some(name=>name.includes('.compose-')),false);
+ const receiving=app.request(new Request('https://sync.test'+path,{method:'PUT',duplex:'half',body:stream,signal:abort.signal,headers:{'x-upload-capability':upload.capability,'x-gateway-assertion':await signGatewayAssertion({key,ownerId:owner,method:'PUT',path})}}));await ready;
+ // Stream prefetch can precede gateway authentication. Abort only after the
+ // real receiver opens its stage, rather than racing a fixed 10ms timer.
+ const deadline=Date.now()+5000;
+ while(!readdirSync(options.dataDir,{recursive:true}).some(name=>name.includes('.compose-'))){
+  if(Date.now()>=deadline){abort.abort();await receiving;assert.fail('upload receiver did not open its stage');}
+  await new Promise(resolve=>setTimeout(resolve,5));
+ }
+ abort.abort();assert.notEqual((await receiving).status,200);assert.equal(readdirSync(options.dataDir,{recursive:true}).some(name=>name.includes('.compose-')),false);
  assert.equal((await call(app,'/v1/uploads/'+upload.id,undefined,owner,'DELETE')).status,404);
 });

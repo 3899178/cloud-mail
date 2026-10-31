@@ -33,7 +33,6 @@ export async function createImapSession({ account, config, auth, signal, endpoin
   signal?.removeEventListener('abort', abort);
   let inventory;
   async function folders() { inventory = await client.list(); if (inventory.length > 200) fail('CAPACITY_EXCEEDED'); return inventory.map(f => ({ id: f.path, kind: folderKind(f) })); }
-  const normalMessage = m => !m.flags?.has('\\Draft') && ![...(m.labels || [])].some(label => ['\\Sent', '\\Trash', '\\Junk', '\\Drafts'].includes(label));
   const metadata = m => {
     if (m.record) return m.record;
     const receivedAt = new Date(m.internalDate).getTime();
@@ -49,7 +48,7 @@ export async function createImapSession({ account, config, auth, signal, endpoin
     if (exists > 20000) fail('CAPACITY_EXCEEDED');
     for (let start = 1; start <= exists; start += 100) {
       for await (const m of client.fetch(`${start}:${Math.min(exists, start + 99)}`, query, options)) {
-        const row = { uid: m.uid, flags: m.flags, labels: m.labels, ...(query.envelope ? { record: metadata(m) } : {}) };
+        const row = { uid: m.uid, flags: m.flags, labels: m.labels, emailId: m.emailId, ...(query.envelope ? { record: metadata(m) } : {}) };
         bytes += Buffer.byteLength(JSON.stringify(row));
         if (rows.length >= 20000 || bytes > 8 * 1024 * 1024) fail('CAPACITY_EXCEEDED');
         rows.push(row);
@@ -58,12 +57,20 @@ export async function createImapSession({ account, config, auth, signal, endpoin
     if (client.mailbox.exists !== exists || (!options.changedSince && rows.length !== exists) || new Set(rows.map(m => String(m.uid))).size !== rows.length) fail('SYNC_FAILED');
     return rows;
   }
-  async function snapshot(folder, { checkpoint, catalog = [] } = {}) {
+  async function snapshot(folder, { checkpoint, catalog = [], receivedStableIds = new Set(), baselineAt } = {}) {
     const lock = await client.getMailboxLock(folder);
     try {
       // A cached mailbox lock does not SELECT again. Obtain a fresh server token.
       await client.mailboxOpen(folder);
       const uidValidity = String(client.mailbox.uidValidity); const before = token();
+      const receivedUids = new Set(catalog.filter(c => c.uidValidity === uidValidity).map(c => c.remoteId));
+      const normalMessage = m => {
+        const labels = m.labels || new Set();
+        if (m.flags?.has('\\Draft') || ['\\Trash', '\\Junk', '\\Drafts'].some(label => labels.has(label))) return false;
+        // Gmail can mark the same message received AND sent, and omits the
+        // selected Inbox label. Keep proven received identities after archive.
+        return !labels.has('\\Sent') || folder.toUpperCase() === 'INBOX' || labels.has('\\Inbox') || receivedUids.has(String(m.uid)) || receivedStableIds.has(m.emailId || m.record?.stableId);
+      };
       let saved; try { saved = JSON.parse(checkpoint?.cursor || 'null'); } catch {}
       const reusable = saved?.v === 1 && checkpoint.uidValidity === uidValidity && Number.isSafeInteger(saved.auditAt) && saved.auditAt <= clock() && clock() - saved.auditAt < 300000;
       let messages; let auditAt = saved?.auditAt; let lightSignature;
@@ -85,7 +92,7 @@ export async function createImapSession({ account, config, auth, signal, endpoin
           }
           if (pending.size) fail('SYNC_FAILED');
         } else {
-          const light = await scan({ uid: true, flags: true, labels: true });
+          const light = await scan({ uid: true, flags: true, labels: true, emailId: true });
           lightSignature = lightDigest(light);
           const ids = new Set(light.filter(normalMessage).map(m => String(m.uid)));
           for (const id of known.keys()) if (!ids.has(id)) known.delete(id);
@@ -108,6 +115,12 @@ export async function createImapSession({ account, config, auth, signal, endpoin
         if (!before.modseq) lightSignature = lightDigest(rows);
       }
       if (!same(before, token())) fail('SYNC_FAILED');
+      // A filter update can expose an old UID absent from the earlier catalog.
+      // Preserve its pre-binding exclusion; a genuinely new UID may still have
+      // an old INTERNALDATE (APPEND) and must keep normal admission semantics.
+      if (saved?.v === 1 && checkpoint.uidValidity === uidValidity && /^[1-9]\d*$/.test(saved.uidNext) && Number.isSafeInteger(baselineAt)) {
+        messages = messages.map(m => !receivedUids.has(m.id) && BigInt(m.id) < BigInt(saved.uidNext) && m.receivedAt < baselineAt ? { ...m, historical: true } : m);
+      }
       messages.sort((a, b) => Number(a.id) - Number(b.id));
       if (messages.length > 20000 || Buffer.byteLength(JSON.stringify(messages)) > 8 * 1024 * 1024) fail('CAPACITY_EXCEEDED');
       return { uidValidity, cursor: JSON.stringify({ ...before, auditAt }), messages, lightSignature };

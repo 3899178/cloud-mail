@@ -14,7 +14,7 @@ async function tlsFixture(t, handler) {
 const quote = value => JSON.stringify(String(value));
 export const wireMime = (id, text = 'Original body') => Buffer.from(`Message-ID: <${id}@example.test>\r\nFrom: sender@example.test\r\nTo: user@example.test\r\nSubject: ${id}\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="wire"\r\n\r\n--wire\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${text}\r\n--wire\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="test.bin"\r\nContent-Transfer-Encoding: base64\r\n\r\nAAEC/w==\r\n--wire--\r\n`);
 export async function imapFixture(t) {
-  const state = { validity: '100', condstore: false, modseq: 1, metadataRows: 0, egressBytes: 0, metadataEgressBytes: 0, authFailure: false, folders: new Map([['INBOX', []], ['Archive', []], ['Rules', []], ['Junk', []], ['Trash', []], ['Sent', []], ['Drafts', []]]), commands: [], connections: 0 };
+  const state = { validity: '100', uidNext: new Map(), condstore: false, modseq: 1, metadataRows: 0, egressBytes: 0, metadataEgressBytes: 0, authFailure: false, folders: new Map([['INBOX', []], ['Archive', []], ['Rules', []], ['Junk', []], ['Trash', []], ['Sent', []], ['Drafts', []]]), commands: [], connections: 0 };
   const endpoint = await tlsFixture(t, socket => {
     state.connections++; let buffer = ''; let selected = 'INBOX';
     const write = socket.write.bind(socket);
@@ -27,21 +27,24 @@ export async function imapFixture(t) {
         state.commands.push(line.replace(/LOGIN .*/, 'LOGIN [redacted]'));
         const [tag, rawCommand] = line.split(' '); const command = rawCommand?.toUpperCase();
         const ok = () => socket.write(`${tag} OK completed\r\n`);
-        if (command === 'CAPABILITY') { socket.write(`* CAPABILITY IMAP4rev1 UIDPLUS MOVE${state.condstore ? ' ENABLE CONDSTORE' : ''}\r\n`); ok(); }
+        if (command === 'CAPABILITY') { socket.write(`* CAPABILITY IMAP4rev1 UIDPLUS MOVE${state.condstore ? ' ENABLE CONDSTORE' : ''}${state.gmail ? ' X-GM-EXT-1' : ''}\r\n`); ok(); }
         else if (command === 'ENABLE') { socket.write('* ENABLED CONDSTORE\r\n'); ok(); }
         else if (command === 'LOGIN') socket.write(`${tag} ${state.authFailure ? 'NO [AUTHENTICATIONFAILED] rejected' : 'OK authenticated'}\r\n`);
         else if (command === 'LIST' || command === 'LSUB') {
           if (/LIST "" ""$/.test(line)) { socket.write('* LIST (\\Noselect) "/" ""\r\n'); ok(); continue; }
           for (const folder of state.folders.keys()) {
-            const special = ({ Archive: '\\Archive', Junk: '\\Junk', Trash: '\\Trash', Sent: '\\Sent', Drafts: '\\Drafts' })[folder] || '';
+            const special = ({ Archive: '\\Archive', AllMail: '\\All', Junk: '\\Junk', Trash: '\\Trash', Sent: '\\Sent', Drafts: '\\Drafts' })[folder] || '';
             socket.write(`* ${command} (${special}) "/" ${quote(folder)}\r\n`);
           }
           ok();
         } else if (command === 'SELECT' || command === 'EXAMINE') {
           const match = line.match(/(?:SELECT|EXAMINE) ("(?:[^"\\]|\\.)*"|[^ ]+)/i); selected = match[1].startsWith('"') ? JSON.parse(match[1]) : match[1];
           const messages = state.folders.get(selected) || [];
+          const mailboxKey = JSON.stringify([state.validity, selected]);
+          const uidNext = Math.max(state.uidNext.get(mailboxKey) || 1, Math.max(0, ...messages.map(m => Number(m.uid))) + 1);
+          state.uidNext.set(mailboxKey, uidNext);
           if (state.condstore) socket.write(`* OK [HIGHESTMODSEQ ${state.modseq}] modseq\r\n`);
-          socket.write(`* FLAGS (\\Seen \\Draft)\r\n* ${messages.length} EXISTS\r\n* OK [UIDVALIDITY ${state.validity}] validity\r\n* OK [UIDNEXT ${Math.max(0, ...messages.map(m => Number(m.uid))) + 1}] next\r\n${tag} OK [READ-WRITE] selected\r\n`);
+          socket.write(`* FLAGS (\\Seen \\Draft)\r\n* ${messages.length} EXISTS\r\n* OK [UIDVALIDITY ${state.validity}] validity\r\n* OK [UIDNEXT ${uidNext}] next\r\n${tag} OK [READ-WRITE] selected\r\n`);
         } else if (command === 'UID' && / SEARCH /i.test(line)) {
           socket.write(`* SEARCH ${(state.folders.get(selected) || []).filter(m => m.uid !== state.omitSearchUid).map(m => m.uid).join(' ')}\r\n`); ok();
         } else if (command === 'FETCH' || (command === 'UID' && / UID FETCH |^\S+ UID FETCH /i.test(line))) {
@@ -57,6 +60,12 @@ export async function imapFixture(t) {
             const flags = m.unread ? '' : '\\Seen';
             const parts = [`UID ${m.uid}`, `FLAGS (${flags})`, `INTERNALDATE "${m.internalDate || '27-Oct-2026 12:00:00 +0000'}"`, `RFC822.SIZE ${m.raw.length}`, `ENVELOPE (NIL ${quote(m.subject)} ((NIL NIL "sender" "example.test")) NIL NIL NIL NIL NIL NIL ${quote(`<${m.key}@example.test>`)})`];
             if (!/ENVELOPE/i.test(line)) parts.splice(2);
+            if (state.gmail && /X-GM-MSGID/i.test(line)) parts.push(`X-GM-MSGID ${m.emailId || m.uid}`);
+            if (state.gmail && /X-GM-LABELS/i.test(line)) {
+              // Gmail omits the selected mailbox's own label from FETCH.
+              const selectedLabel = selected === 'INBOX' ? '\\Inbox' : null;
+              parts.push(`X-GM-LABELS (${(m.labels || []).filter(label => label !== selectedLabel).map(quote).join(' ')})`);
+            }
             const partial = line.match(/BODY\.PEEK\[\](?:<(\d+)\.(\d+)>)?/i);
             if (partial) {
               const start = Number(partial[1] || 0); const chunk = m.raw.subarray(start, start + Number(partial[2] || m.raw.length));

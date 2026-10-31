@@ -26,9 +26,10 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits(),
       const snapshots = []; const current = []; let metadataBytes = 0;
       const committed = store.sources.catalog(ownerId, accountId);
       const previous = store.sources.identities(ownerId, accountId, committed);
+      const receivedStableIds = new Set(previous.filter(c => c.stableId).map(c => c.stableId));
       for (const folder of folders) {
         signal?.throwIfAborted();
-        const snapshot = await session.snapshot(folder.id, { checkpoint: store.checkpoints.get(ownerId, accountId, folder.id), catalog: committed.filter(c => c.folder === folder.id), baselineAt: account.createdAt, signal });
+        const snapshot = await session.snapshot(folder.id, { checkpoint: store.checkpoints.get(ownerId, accountId, folder.id), catalog: committed.filter(c => c.folder === folder.id), receivedStableIds, baselineAt: account.createdAt, signal });
         if (!Array.isArray(snapshot.messages)) fail('SYNC_FAILED');
         if (snapshot.messages.length + current.length > 20000) fail('CAPACITY_EXCEEDED');
         snapshots.push({ folder, snapshot });
@@ -46,6 +47,7 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits(),
       const completedIds = new Set(previous.filter(c => c.admitted).map(c => c.sourceId));
       const checkpoints = new Map(folders.map(f => [f.id, store.checkpoints.get(ownerId, accountId, f.id)]));
       const hasBaseline = Boolean(store.sources.baseline(ownerId, accountId));
+      const historicalStableIds = new Set(current.filter(c => c.stableId && c.metadata.historical === true).map(c => c.stableId));
       for (const c of current) {
         let match = previousLocations.get(location(c));
         if (!match && c.stableId) match = stable.get(c.stableId);
@@ -60,7 +62,7 @@ export function createSyncEngine({ store, registry, limits = createWorkLimits(),
           const checkpoint = checkpoints.get(c.folder);
           const reset = checkpoint && checkpoint.uidValidity !== c.uidValidity;
           if ((reset || (!checkpoint && hasBaseline)) && c.receivedAt < account.createdAt) fail('RESYNC_REQUIRED');
-          c.admitted = checkpoint ? true : c.receivedAt >= account.createdAt;
+          c.admitted = checkpoint ? c.metadata.historical !== true && !historicalStableIds.has(c.stableId) : c.receivedAt >= account.createdAt;
           c.sourceId = c.stableId ? `s_${digest(c.stableId)}` : `i_${digest(location(c))}`;
         }
       }
