@@ -1,0 +1,11 @@
+name: Mail sync Linux acceptance candidate
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  registration-only:
+    if: ${{ false }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo 'Select the reviewed feature branch to run its real Linux acceptance workflow.'
