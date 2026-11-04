@@ -54,6 +54,14 @@ export async function syncRequest(c, {
   headers = {},
   stream = false
 }) {
+  const allowed = c.env.MAIL_SYNC_ALLOWED_OWNER_IDS;
+  if (allowed !== undefined) {
+    // Operator-only pilot switch. Identity is supplied by authenticated server
+    // context, or by the one-time state resolution during an OAuth callback.
+    if (typeof allowed !== 'string' || !/^[1-9]\d*(?:,[1-9]\d*)*$/.test(allowed)) fail('SYNC_UNAVAILABLE');
+    const resolvingState = ownerId === 'oauth-callback' && method === 'POST' && path === '/v1/oauth/resolve';
+    if (!resolvingState && !allowed.split(',').includes(ownerId)) fail('SYNC_UNAVAILABLE');
+  }
   let url;
   try {
     url = new URL(c.env.MAIL_SYNC_URL);

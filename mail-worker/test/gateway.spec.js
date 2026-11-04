@@ -8,6 +8,32 @@ const ref=(accountId,id)=>encodeSourceRef({source:'cloud-mail',accountId:String(
 let token;
 beforeEach(async()=>{await fixture();token=await auth();});
 const req=(path,init={})=>app.request(origin+path,{...init,headers:{Authorization:token,...init.headers}},env);
+it('personal pilot admits only configured server owner and cannot be spoofed by request fields',async()=>{
+ const previous=env.MAIL_SYNC_ALLOWED_OWNER_IDS;
+ env.MAIL_SYNC_ALLOWED_OWNER_IDS='1';env.MAIL_SYNC_GATEWAY_KEY='07'.repeat(32);env.MAIL_SYNC_URL='https://sync.example.test';
+ const calls=[];env.MAIL_SYNC={fetch:async r=>{calls.push(r.url);return Response.json({accounts:[]})}};
+ try {
+  expect((await req('/external/accounts')).status).toBe(200);
+  const other=await auth(2);
+  const denied=await req('/external/accounts?ownerId=1',{method:'POST',headers:{Authorization:other,'x-owner-id':'1'},body:'{"ownerId":"1","provider":"imap"}'});
+  expect(denied.status).toBe(503);expect((await denied.json()).error.code).toBe('SYNC_UNAVAILABLE');
+  expect(calls).toHaveLength(1);
+  await env.db.prepare("INSERT INTO email(email_id,user_id,account_id,subject,text,create_time) VALUES(1,2,2,'local','retained','2026-01-01 00:00:00')").run();
+  const local=await req('/unified/messages/'+ref(2,1),{headers:{Authorization:other}});
+  expect(local.status).toBe(200);expect((await local.json()).data.message.text).toBe('retained');
+ }finally{if(previous===undefined)delete env.MAIL_SYNC_ALLOWED_OWNER_IDS;else env.MAIL_SYNC_ALLOWED_OWNER_IDS=previous}
+});
+it('personal pilot fails closed on invalid configuration and matches whole owner IDs',async()=>{
+ const previous=env.MAIL_SYNC_ALLOWED_OWNER_IDS;
+ env.MAIL_SYNC_GATEWAY_KEY='07'.repeat(32);env.MAIL_SYNC_URL='https://sync.example.test';
+ let calls=0;env.MAIL_SYNC={fetch:async()=>{calls++;return Response.json({accounts:[]})}};
+ try {
+  for(const invalid of ['', '11', '1,', ' 1', 1]){env.MAIL_SYNC_ALLOWED_OWNER_IDS=invalid;expect((await req('/external/accounts')).status).toBe(503)}
+  expect(calls).toBe(0);
+  env.MAIL_SYNC_ALLOWED_OWNER_IDS='1,2';expect((await req('/external/accounts')).status).toBe(200);
+  delete env.MAIL_SYNC_ALLOWED_OWNER_IDS;expect((await req('/external/accounts',{headers:{Authorization:await auth(2)}})).status).toBe(200);
+ }finally{if(previous===undefined)delete env.MAIL_SYNC_ALLOWED_OWNER_IDS;else env.MAIL_SYNC_ALLOWED_OWNER_IDS=previous}
+});
 it('requires invitations even when legacy setting disabled them, including OAuth bind',async()=>{
  for (const path of ['/register','/oauth/bindUser']) {
   if(path.includes('oauth')) await env.db.prepare("INSERT INTO oauth(oauth_user_id,user_id,platform) VALUES('provider-user',0,'google')").run();
