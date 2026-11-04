@@ -2,58 +2,45 @@ diff --git a/services/proton-helper/third_party/hydroxide/protonmail/events.go b
 index 562b31f..e6a9e93 100644
 --- a/services/proton-helper/third_party/hydroxide/protonmail/events.go
 +++ b/services/proton-helper/third_party/hydroxide/protonmail/events.go
-@@ -2,6 +2,7 @@ package protonmail
- 
- import (
- 	"encoding/json"
+@@ -4,0 +5 @@ import (
 +	"errors"
- 	"net/http"
- )
- 
-@@ -14,6 +15,8 @@ const (
- 
- type Event struct {
- 	ID       string `json:"EventID"`
+@@ -16,0 +18,2 @@ type Event struct {
 +	More     *int
 +	Labels   []json.RawMessage
- 	Refresh  EventRefresh
- 	Messages []*EventMessage
- 	Contacts []*EventContact
-@@ -132,7 +135,7 @@ func (update *EventMessageUpdate) Patch(msg *Message) {
- 
- type rawEventMessage struct {
- 	ID      string
+@@ -135 +138 @@ type rawEventMessage struct {
 -	Action  EventAction
 +	Action  *EventAction
- 	Message json.RawMessage `json:",omitempty"`
- }
- 
-@@ -141,9 +144,12 @@ func (em *EventMessage) UnmarshalJSON(b []byte) error {
- 	if err := json.Unmarshal(b, &raw); err != nil {
- 		return err
- 	}
+@@ -143,0 +147,3 @@ func (em *EventMessage) UnmarshalJSON(b []byte) error {
 +	if raw.Action == nil || *raw.Action < EventDelete || *raw.Action > EventUpdateFlags {
 +		return errors.New("protonmail: missing or invalid message event action")
 +	}
- 	em.ID = raw.ID
+@@ -145,2 +151,2 @@ func (em *EventMessage) UnmarshalJSON(b []byte) error {
 -	em.Action = raw.Action
 -	switch raw.Action {
 +	em.Action = *raw.Action
 +	switch em.Action {
- 	case EventCreate:
- 		em.Created = new(Message)
- 		return json.Unmarshal(raw.Message, em.Created)
 diff --git a/services/proton-helper/third_party/hydroxide/protonmail/messages.go b/services/proton-helper/third_party/hydroxide/protonmail/messages.go
-index ea98b8a..3d3972a 100644
+index ea98b8a..1005e3f 100644
 --- a/services/proton-helper/third_party/hydroxide/protonmail/messages.go
 +++ b/services/proton-helper/third_party/hydroxide/protonmail/messages.go
-@@ -168,6 +168,9 @@ type MessageFilter struct {
- 
- func (c *Client) ListMessages(filter *MessageFilter) (total int, messages []*Message, err error) {
- 	v := url.Values{}
+@@ -170,0 +171,3 @@ func (c *Client) ListMessages(filter *MessageFilter) (total int, messages []*Mes
 +	for _, id := range filter.ID {
 +		v.Add("IDs[]", id)
 +	}
- 	if filter.Page != 0 {
- 		v.Set("Page", strconv.Itoa(filter.Page))
- 	}
+@@ -206,2 +209,2 @@ func (c *Client) ListMessages(filter *MessageFilter) (total int, messages []*Mes
+-		Total    int
+-		Messages []*Message
++		Total    *int
++		Messages *[]*Message
+@@ -212,2 +215,9 @@ func (c *Client) ListMessages(filter *MessageFilter) (total int, messages []*Mes
+-
+-	return respData.Total, respData.Messages, nil
++	if respData.Code != 1000 || respData.Total == nil || respData.Messages == nil || *respData.Total < 0 || len(*respData.Messages) > *respData.Total || (filter.PageSize > 0 && len(*respData.Messages) > filter.PageSize) {
++		return 0, nil, errors.New("protonmail: missing or invalid message inventory")
++	}
++	for _, message := range *respData.Messages {
++		if message == nil {
++			return 0, nil, errors.New("protonmail: null inventory message")
++		}
++	}
++	return *respData.Total, *respData.Messages, nil

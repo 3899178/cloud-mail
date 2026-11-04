@@ -23,3 +23,16 @@ test('assertion verification requires nonce persistence to explicitly succeed, i
   const token = await contracts.signGatewayAssertion({ key, ownerId: 'user-a', method: 'GET', path: '/v1/accounts', now });
   await assert.rejects(contracts.verifyGatewayAssertion({ key, token, method: 'GET', path: '/v1/accounts', now, consumeNonce: async () => false }), { code: 'UNAUTHORIZED' });
 });
+
+test('lazy request bodies are read only after signature, expiry and request scope authenticate', async () => {
+ const key = new Uint8Array(32).fill(3), now = 1700000000000;
+ let reads = 0;
+ const readBody = async () => { reads++; return new TextEncoder().encode('body'); };
+ const valid = await contracts.signGatewayAssertion({ key, ownerId: 'user-a', method: 'POST', path: '/v1/accounts', body: 'body', now });
+ const result = await contracts.verifyGatewayAssertion({ key, token: valid, method: 'POST', path: '/v1/accounts', now, readBody, consumeNonce: () => true });
+ assert.equal(result.ownerId, 'user-a'); assert.equal(reads, 1);
+ for (const token of ['garbage', await contracts.signGatewayAssertion({ key, ownerId: 'user-a', method: 'POST', path: '/wrong', body: 'body', now }), await contracts.signGatewayAssertion({ key, ownerId: 'user-a', method: 'POST', path: '/v1/accounts', body: 'body', now: now - 60001 })]) {
+  await assert.rejects(contracts.verifyGatewayAssertion({ key, token, method: 'POST', path: '/v1/accounts', now, readBody, consumeNonce: () => true }), { code: 'UNAUTHORIZED' });
+ }
+ assert.equal(reads, 1);
+});

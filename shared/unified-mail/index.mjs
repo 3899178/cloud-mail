@@ -67,15 +67,25 @@ export async function signGatewayAssertion({ key, ownerId, method, path, body = 
   const payload = encode({ v: 1, ownerId, iat: now, exp: now + 60000, nonce, method, path, bodyHash: await digest(body) });
   return payload + '.' + base64(new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(key), encoder.encode(payload))));
 }
-export async function verifyGatewayAssertion({ key, token, method, path, body = new Uint8Array(), now = Date.now(), consumeNonce }) {
+export async function verifyGatewayAssertion({ key, token, method, path, body = new Uint8Array(), readBody, now = Date.now(), clock, consumeNonce }) {
+  let claims;
   try {
     scope(method, path);
     if (typeof token !== 'string' || token.length > 8192) throw new Error();
     const [payload, signature, extra] = token.split('.');
     if (extra !== undefined || !await crypto.subtle.verify('HMAC', await hmacKey(key), unbase64(signature), encoder.encode(payload))) throw new Error();
-    const claims = decode(payload);
+    claims = decode(payload);
     identifier(claims.ownerId); identifier(claims.nonce);
-    if (claims.v !== 1 || claims.nonce.length < 16 || !Number.isSafeInteger(claims.iat) || !Number.isSafeInteger(claims.exp) || claims.exp - claims.iat !== 60000 || claims.iat > now + 5000 || claims.exp <= now || claims.method !== method || claims.path !== path || claims.bodyHash !== await digest(body)) throw new Error();
+    const checkedNow = clock ? clock() : now;
+    if (!Number.isSafeInteger(checkedNow) || claims.v !== 1 || claims.nonce.length < 16 || !Number.isSafeInteger(claims.iat) || !Number.isSafeInteger(claims.exp) || claims.exp - claims.iat !== 60000 || claims.iat > checkedNow + 5000 || claims.exp <= checkedNow || claims.method !== method || claims.path !== path || (readBody !== undefined && typeof readBody !== 'function')) throw new Error();
+  } catch { fail('UNAUTHORIZED'); }
+  // Network reads must not be admitted until the signed envelope authenticates.
+  // Keep body-limit/timeout errors distinct from failed authentication.
+  const actualBody = readBody ? await readBody() : body;
+  try {
+    const finishedNow = clock ? clock() : now;
+    if (!Number.isSafeInteger(finishedNow) || claims.exp <= finishedNow || claims.iat > finishedNow + 5000) throw new Error();
+    if (claims.bodyHash !== await digest(actualBody)) throw new Error();
     if (await consumeNonce(claims.ownerId, claims.nonce, claims.exp) !== true) throw new Error();
     return { ownerId: claims.ownerId };
   } catch { fail('UNAUTHORIZED'); }

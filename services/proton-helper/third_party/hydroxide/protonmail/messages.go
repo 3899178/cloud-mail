@@ -206,14 +206,21 @@ func (c *Client) ListMessages(filter *MessageFilter) (total int, messages []*Mes
 
 	var respData struct {
 		resp
-		Total    int
-		Messages []*Message
+		Total    *int
+		Messages *[]*Message
 	}
 	if err := c.doJSON(req, &respData); err != nil {
 		return 0, nil, err
 	}
-
-	return respData.Total, respData.Messages, nil
+	if respData.Code != 1000 || respData.Total == nil || respData.Messages == nil || *respData.Total < 0 || len(*respData.Messages) > *respData.Total || (filter.PageSize > 0 && len(*respData.Messages) > filter.PageSize) {
+		return 0, nil, errors.New("protonmail: missing or invalid message inventory")
+	}
+	for _, message := range *respData.Messages {
+		if message == nil {
+			return 0, nil, errors.New("protonmail: null inventory message")
+		}
+	}
+	return *respData.Total, *respData.Messages, nil
 }
 
 type MessageCount struct {

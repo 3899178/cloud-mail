@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { fixture, account, ingest, owner, foundation } from './helpers.mjs';
 const key = new Uint8Array(32).fill(19);
 import * as contracts from '../../../../shared/unified-mail/index.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 
 async function appFixture(t) {
   const f = await fixture(t); account(f.store); account(f.store, 'user-b'); ingest(f.store);
@@ -12,6 +13,59 @@ async function appFixture(t) {
   const sign = async (path = '/v1/accounts', overrides = {}) => contracts.signGatewayAssertion({ key, ownerId: owner, method: 'GET', path, now: f.options.clock(), ...overrides });
   return { ...f, app, sign };
 }
+
+test('invalid gateway headers with an open body cannot block an authenticated request', async t => {
+  const { app, sign } = await appFixture(t);
+  let controller;
+  const stream = new ReadableStream({ start(value) { controller = value; controller.enqueue(new TextEncoder().encode('{}')); } });
+  const invalid = app.request(new Request('http://localhost/v1/accounts', { method: 'POST', body: stream, duplex: 'half', headers: { 'x-gateway-assertion': 'garbage' } }));
+  const valid = app.request('/v1/accounts', { headers: { 'x-gateway-assertion': await sign() } });
+  t.after(async () => { try { controller.close(); } catch {} await Promise.all([invalid, valid]); });
+  const response = await Promise.race([valid, delay(500).then(() => null)]);
+  assert.ok(response, 'valid request must finish while the invalid request body remains open');
+  assert.equal(response.status, 200);
+  assert.equal((await invalid).status, 401);
+});
+
+test('aborting an authenticated network body releases its admission', async t => {
+  const { app, sign } = await appFixture(t);
+  const abort = new AbortController(); let controller;
+  const stream = new ReadableStream({ start(value) { controller = value; controller.enqueue(new TextEncoder().encode('{}')); } });
+  const pending = app.request(new Request('http://localhost/v1/accounts', { method: 'POST', body: stream, duplex: 'half', signal: abort.signal, headers: { 'x-gateway-assertion': await sign('/v1/accounts', { method: 'POST', body: '{}' }) } }));
+  t.after(async () => { try { controller.close(); } catch {} await pending; });
+  await delay(10); abort.abort();
+  const response = await Promise.race([pending, delay(500).then(() => null)]);
+  assert.ok(response, 'aborted authenticated network body must stop waiting');
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: { code: 'BUSY' } });
+});
+
+test('an authenticated body has a fifteen-second total read deadline', async t => {
+  const { app, sign } = await appFixture(t);
+  const token = await sign('/v1/accounts', { method: 'POST', body: '{}' });
+  let controller, started;
+  const reading = new Promise(resolve => { started = resolve; });
+  const stream = new ReadableStream({ start(value) { controller = value; controller.enqueue(new TextEncoder().encode('{}')); }, pull() { started(); } });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = app.request(new Request('http://localhost/v1/accounts', { method: 'POST', body: stream, duplex: 'half', headers: { 'x-gateway-assertion': token } }));
+  t.after(async () => { try { controller.close(); } catch {} await pending; });
+  await reading; t.mock.timers.tick(15000);
+  const response = await Promise.race([pending, new Promise(resolve => setImmediate(() => resolve(null)))]);
+  assert.ok(response, 'the body reader must stop at its fixed deadline');
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: { code: 'BUSY' } });
+});
+
+test('a body completing after assertion expiry cannot use the earlier header authentication', async t => {
+  const { app, sign, tick } = await appFixture(t);
+  let controller, started;
+  const reading = new Promise(resolve => { started = resolve; });
+  const stream = new ReadableStream({ start(value) { controller = value; controller.enqueue(new TextEncoder().encode('{}')); }, pull() { started(); } });
+  const pending = app.request(new Request('http://localhost/v1/accounts', { method: 'POST', body: stream, duplex: 'half', headers: { 'x-gateway-assertion': await sign('/v1/accounts', { method: 'POST', body: '{}' }) } }));
+  t.after(async () => { try { controller.close(); } catch {} await pending; });
+  await reading; tick(60001); controller.close();
+  assert.equal((await pending).status, 401);
+});
 test('only valid gateway assertions reach tenant-scoped account and message DTOs', async t => {
   const { app, sign } = await appFixture(t);
   assert.equal((await app.request('/v1/accounts')).status, 401);

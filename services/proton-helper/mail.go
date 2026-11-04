@@ -141,6 +141,7 @@ func (s *mailSession) snapshot(ctx context.Context, label, cursor string, _ int6
 	seen := map[string]bool{}
 	metadata := 0
 	totalSeen := 0
+	inventoryTotal := -1
 	for page := 0; page < 201; page++ {
 		if err = ctx.Err(); err != nil {
 			return result, err
@@ -151,6 +152,11 @@ func (s *mailSession) snapshot(ctx context.Context, label, cursor string, _ int6
 		}
 		if total > 20000 || total < 0 {
 			return result, errCapacity
+		}
+		if inventoryTotal < 0 {
+			inventoryTotal = total
+		} else if total != inventoryTotal {
+			return result, errSync
 		}
 		for _, m := range messages {
 			totalSeen++

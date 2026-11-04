@@ -3,6 +3,7 @@ import { session } from '@/auth/session.js'
 import { request } from '@/request/unified.js'
 const codeOf = e => e?.response?.data?.error?.code || e?.error?.code || e?.code || 'REQUEST_FAILED'
 const quiet = e => ['STALE_SESSION','ERR_CANCELED','AbortError'].includes(codeOf(e))
+const newer = (a,b) => a.receivedAt>b.receivedAt || (a.receivedAt===b.receivedAt && a.ref>b.ref)
 export const useUnifiedStore = defineStore('unified', {
   // Never persisted: source refs, bodies, upload capabilities and credentials.
   state: () => ({ selection:{source:'all',accountId:null}, items:[], detail:null, accounts:[], localAccounts:[], accountsError:'', accountsLoading:false,
@@ -26,17 +27,39 @@ export const useUnifiedStore = defineStore('unified', {
       } catch(e) { if(lease.current() && generation===this.accountGeneration && !quiet(e)) this.accountsError=codeOf(e) }
       finally { if(lease.current() && generation===this.accountGeneration)this.accountsLoading=false }
     },
-    async load({append=false}={}) {
+    async load({append=false,refresh=false}={}) {
       if(append && (this.loading || !this.nextCursor || this.resetRequired))return
+      if(refresh && this.loading)return
       const lease=session.lease(), generation=++this.listGeneration
+      const boundary=refresh && !append && !this.incomplete && !this.resetRequired ? this.items.at(-1) : null
       const query={source:this.selection.source,limit:50}
       if(this.selection.accountId!==null)query.accountId=this.selection.accountId
       if(append)query.cursor=this.nextCursor
       this.loading=true; this.error=''
       try {
-        const data=await request('/unified/messages',{query,signal:lease.signal})
+        let data=await request('/unified/messages',{query,signal:lease.signal})
         lease.assertCurrent(); if(generation!==this.listGeneration)return
-        const rows=append&&!data.resetRequired?[...this.items,...data.items]:data.items
+        let fresh=[...data.items]
+        const cursors=new Set()
+        // Refresh the whole visible range from a new head. Keeping complete
+        // pages also keeps the server's opaque continuation cursor gap-free.
+        while(boundary && !data.incomplete && !data.resetRequired && data.nextCursor && fresh.length && newer(fresh.at(-1),boundary)) {
+          if(cursors.has(data.nextCursor))throw Object.assign(new Error(),{code:'INVALID_RESPONSE'})
+          cursors.add(data.nextCursor)
+          const previous=fresh.at(-1)
+          data=await request('/unified/messages',{query:{...query,cursor:data.nextCursor},signal:lease.signal})
+          lease.assertCurrent();if(generation!==this.listGeneration)return
+          if(data.incomplete || data.resetRequired) {
+            // Source recovery/outage invalidates the old multi-source cursor.
+            data=await request('/unified/messages',{query,signal:lease.signal})
+            lease.assertCurrent();if(generation!==this.listGeneration)return
+            fresh=[...data.items];break
+          }
+          if(data.items.length && !newer(previous,data.items.at(-1)))throw Object.assign(new Error(),{code:'INVALID_RESPONSE'})
+          if(!data.items.length && data.nextCursor)throw Object.assign(new Error(),{code:'INVALID_RESPONSE'})
+          fresh.push(...data.items)
+        }
+        const rows=append&&!data.resetRequired?[...this.items,...fresh]:fresh
         this.items=[...new Map(rows.map(m=>[m.ref,m])).values()]
         this.incomplete=!!data.incomplete; this.resetRequired=!!data.resetRequired
         this.sources=data.sources; this.nextCursor=data.resetRequired?null:data.nextCursor

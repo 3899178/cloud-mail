@@ -33,6 +33,77 @@ const message = (ref, source='external') => ({ref,source,accountId:'1',receivedA
 const page = items => ({items,nextCursor:null,incomplete:false,resetRequired:false,sources:{local:'ready',external:'ready'}})
 const account = {id:'1',provider:'qq',address:'qq@test',status:'needs-auth',errorCode:'AUTH_REQUIRED'}
 
+describe('background refresh of a paginated inbox',()=>{
+  const rows=()=>Array.from({length:200},(_,i)=>({...message('mail-'+(i+1)),receivedAt:1000-i}))
+  const result=(items,prefix,query={})=>{
+    const offset=query.cursor?Number(query.cursor.split(':')[1]):0
+    return {...page(items.slice(offset,offset+50)),nextCursor:offset+50<items.length?`${prefix}:${offset+50}`:null}
+  }
+  function storeOnly(){setActivePinia(createPinia());session.advance();session.authenticated=true;return useUnifiedStore()}
+  it('the actual ten-second timer retains loaded older pages',async()=>{
+    vi.useFakeTimers();let phase='initial';const items=rows()
+    api.request.mockImplementation(async(path,options)=>result(items,phase,options.query))
+    const w=render(Unified);await flushPromises();const store=useUnifiedStore();await store.load({append:true})
+    expect(store.items).toHaveLength(100);phase='refresh'
+    await vi.advanceTimersByTimeAsync(10000);await flushPromises()
+    expect(store.items).toHaveLength(100);expect(w.find('[data-message-ref="mail-75"]').exists()).toBe(true)
+    expect(store.nextCursor).toBe('refresh:100')
+  })
+  it('the refresh button retains the loaded range as well',async()=>{
+    const items=rows();api.request.mockImplementation(async(path,options)=>result(items,'page',options.query))
+    const w=render(Unified);await flushPromises();const store=useUnifiedStore();await store.load({append:true})
+    await w.get('[data-refresh]').trigger('click');await flushPromises()
+    expect(store.items).toHaveLength(100);expect(w.find('[data-message-ref="mail-75"]').exists()).toBe(true)
+  })
+  it('new head mail retains the prior oldest row and a continuous append cursor',async()=>{
+    let items=rows(),phase='initial';api.request.mockImplementation(async(path,options)=>result(items,phase,options.query))
+    const store=storeOnly();await store.load();await store.load({append:true})
+    items=[...Array.from({length:5},(_,i)=>({...message('new-'+i),receivedAt:1100-i})),...items];phase='refresh'
+    await store.load({refresh:true})
+    expect(store.items.some(row=>row.ref==='mail-100')).toBe(true);expect(store.nextCursor).toBe('refresh:150')
+    expect(store.items.map(row=>row.ref)).toEqual(items.slice(0,150).map(row=>row.ref))
+    await store.load({append:true});expect(store.items.map(row=>row.ref)).toEqual(items.slice(0,200).map(row=>row.ref))
+  })
+  it('removes deleted older rows and revalidates their selected body',async()=>{
+    let items=rows(),removed=false
+    api.request.mockImplementation(async(path,options)=>{
+      if(path==='/unified/messages')return result(items,'page',options.query)
+      if(removed)throw Object.assign(new Error(),{code:'NOT_FOUND'})
+      return {message:{...items[74],text:'older body',attachments:[]}}
+    })
+    const store=storeOnly();await store.load();await store.load({append:true});await store.open('mail-75')
+    items=items.filter(row=>row.ref!=='mail-75');removed=true;await store.load({refresh:true})
+    expect(store.items.some(row=>row.ref==='mail-75')).toBe(false);expect(store.detail).toBeNull()
+  })
+  it('keeps the old visible range with an error if a later refresh page fails',async()=>{
+    let phase='initial';const items=rows()
+    api.request.mockImplementation(async(path,options)=>{if(phase==='refresh'&&options.query.cursor)throw Object.assign(new Error(),{code:'SYNC_UNAVAILABLE'});return result(items,phase,options.query)})
+    const store=storeOnly();await store.load();await store.load({append:true});const before=store.items.map(row=>row.ref)
+    phase='refresh';await store.load({refresh:true})
+    expect(store.items.map(row=>row.ref)).toEqual(before);expect(store.error).toBe('SYNC_UNAVAILABLE');expect(store.loading).toBe(false)
+  })
+  it('does not let a later refresh page overwrite a newly selected mailbox',async()=>{
+    let phase='initial',resolvePage;const items=rows()
+    api.request.mockImplementation(async(path,options)=>{
+      if(options.query.accountId==='other')return page([message('other-mailbox')])
+      if(phase==='refresh'&&options.query.cursor)return new Promise(resolve=>{resolvePage=resolve})
+      return result(items,phase,options.query)
+    })
+    const store=storeOnly();await store.load();await store.load({append:true});phase='refresh'
+    const pending=store.load({refresh:true});await flushPromises();expect(typeof resolvePage).toBe('function')
+    store.select('external','other');await store.load();resolvePage(result(items,'refresh',{cursor:'refresh:50'}));await pending
+    expect(store.items.map(row=>row.ref)).toEqual(['other-mailbox']);expect(store.selection.accountId).toBe('other')
+  })
+  it('resets a partial source and starts at a fresh head when it recovers',async()=>{
+    let phase='initial';const items=rows()
+    api.request.mockImplementation(async(path,options)=>phase==='outage'?{...page([message('local-only','cloud-mail')]),incomplete:true,resetRequired:true,sources:{local:'ready',external:'unavailable'}}:result(items,phase,options.query))
+    const store=storeOnly();await store.load();await store.load({append:true});phase='outage';await store.load({refresh:true})
+    expect(store.items.map(row=>row.ref)).toEqual(['local-only']);expect(store.resetRequired).toBe(true);expect(store.nextCursor).toBeNull()
+    phase='recovered';const before=api.request.mock.calls.length;await store.load({refresh:true})
+    expect(api.request.mock.calls.length-before).toBe(1);expect(store.items).toHaveLength(50);expect(store.nextCursor).toBe('recovered:50');expect(store.incomplete).toBe(false)
+  })
+})
+
 describe('selected detail revalidation', () => {
   it('removes cached body and attachment links after source deletion is confirmed', async () => {
     let removed=false

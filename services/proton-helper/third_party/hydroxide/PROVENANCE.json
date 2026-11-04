@@ -76,7 +76,7 @@
     {
       "path": "protonmail/messages.go",
       "originalSha256": "8cc065be789b0282a301dcf77911edd236cbc89e6e6cc1abdf307d7e455355d4",
-      "productSha256": "bd64c30e866cb2fafea31e29d5726cde129a1ee13306f042eac05fb02221d77e",
+      "productSha256": "9fb99936bebc1ba524346a4437b02212f328bb2c2eca3ad3357d0f9c5f49f519",
       "patched": true
     },
     {
@@ -129,7 +129,7 @@
     },
     {
       "path": "protonmail/messages.go",
-      "reason": "Require successful nested batch mutation responses with exact ID coverage; Task7a: serialize existing ID filter as IDs[] for bounded exact-ID metadata reads"
+      "reason": "Require successful nested batch mutation responses with exact ID coverage; Task7a: serialize existing ID filter as IDs[] for bounded exact-ID metadata reads; whole-web I2: require Code1000, present non-null Total/Messages and bounded consistent inventory"
     },
     {
       "path": "protonmail/events.go",

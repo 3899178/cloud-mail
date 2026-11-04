@@ -17,5 +17,5 @@ function queue(concurrency, maxQueued) {
 }
 export function createWorkLimits({ maxQueued = 50 } = {}) {
   if (!Number.isInteger(maxQueued) || maxQueued < 0 || maxQueued > 1000) fail('INVALID_INPUT');
-  return { parse: queue(1, maxQueued), reconnect: queue(2, maxQueued) };
+  return { parse: queue(1, maxQueued), reconnect: queue(2, maxQueued), request: queue(2, maxQueued) };
 }

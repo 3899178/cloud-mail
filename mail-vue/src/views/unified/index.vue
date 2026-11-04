@@ -64,7 +64,7 @@ let importController,importRevision=0
 function cancelImport(notice=false){importRevision++;importController?.abort();importing.value=false;importProgress.value=null;if(notice)actionError.value='已取消读取，未打开转发 / 回复窗口。'}
 const viewLease=session.lease()
 function backToList(){store.detailGeneration++;store.operationGeneration++;store.detail=null;store.operation=null;confirmTrash.value=false}
-function refresh(){indexAttempts=0;clearTimeout(retryTimer);store.load()}
+function refresh(){indexAttempts=0;clearTimeout(retryTimer);store.load({refresh:true})}
 function localCompose(){ui.writerRef?.open()}
 async function compose(kind){
   cancelImport()
@@ -88,8 +88,8 @@ watch(()=>store.operation,operation=>{
   if(operation?.id && ['queued','running'].includes(operation.state) && polls++<30)pollTimer=setTimeout(()=>{if(alive&&viewLease.current()&&!document.hidden)store.checkOperation()},2000)
   else if(!operation||!['queued','running'].includes(operation.state))polls=0
 })
-function visible(){if(!document.hidden&&viewLease.current()&&store.error!=='LOCAL_INDEX_NOT_READY')store.load()}
-onMounted(()=>{store.load();refreshTimer=setInterval(()=>{if(viewLease.current()&&!document.hidden&&!store.loading&&store.error!=='LOCAL_INDEX_NOT_READY')store.load()},10000);document.addEventListener('visibilitychange',visible)})
+function visible(){if(!document.hidden&&viewLease.current()&&store.error!=='LOCAL_INDEX_NOT_READY')store.load({refresh:true})}
+onMounted(()=>{store.load();refreshTimer=setInterval(()=>{if(viewLease.current()&&!document.hidden&&!store.loading&&store.error!=='LOCAL_INDEX_NOT_READY')store.load({refresh:true})},10000);document.addEventListener('visibilitychange',visible)})
 onBeforeUnmount(()=>{alive=false;cancelImport();store.listGeneration++;store.detailGeneration++;store.operationGeneration++;store.loading=false;clearTimeout(retryTimer);clearTimeout(pollTimer);clearInterval(refreshTimer);document.removeEventListener('visibilitychange',visible)})
 </script>
 <style scoped>

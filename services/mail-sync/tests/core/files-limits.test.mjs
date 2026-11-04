@@ -68,3 +68,14 @@ test('connection recovery runs at most two concurrent tasks', async () => {
   const jobs = [1, 2, 3].map(() => limits.reconnect(async () => { count++; await gate; return count; }));
   await new Promise(resolve => setImmediate(resolve)); assert.equal(count, 2); release(); await Promise.all(jobs); assert.equal(count, 3);
 });
+
+test('two slow authenticated request bodies cannot occupy the MIME parser slot', async () => {
+  const { createWorkLimits } = await foundation('core/limits');
+  const limits = createWorkLimits({ maxQueued: 0 }); let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const pending = [limits.request(() => blocked), limits.request(() => blocked)];
+  try {
+    await assert.rejects(limits.request(async () => {}), { code: 'BUSY' });
+    assert.equal(await limits.parse(async () => 'mime-progress'), 'mime-progress');
+  } finally { release(); await Promise.all(pending); }
+});

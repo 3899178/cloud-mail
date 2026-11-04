@@ -5,17 +5,28 @@ import { createMailService } from './sync/service.mjs';
 import { mountMailRoutes } from './routes/mail.mjs';
 
 const statuses = { UNAUTHORIZED: 401, NOT_FOUND: 404, CONFLICT: 409, INVALID_TRANSITION: 409, BUSY: 503, PAYLOAD_TOO_LARGE: 413, INVALID_REF: 400, INVALID_CURSOR: 400, INVALID_INPUT: 400, AUTH_REQUIRED: 401, PROVIDER_UNAVAILABLE: 503, SYNC_FAILED: 502, RATE_LIMITED: 429, RESYNC_REQUIRED: 409, INCOMPLETE_SWEEP: 409, STORAGE_FULL:507, UPLOAD_EXPIRED:410, UPLOAD_CORRUPT:400 };
-async function boundedBody(request) {
+async function boundedBody(request, deadline) {
   if (!request.body) return new Uint8Array();
+  if (request.signal.aborted || performance.now() >= deadline) fail('BUSY');
   const reader = request.body.getReader(); const chunks = []; let length = 0;
+  const cancel = () => { reader.cancel().catch(() => {}); };
+  let onAbort, interrupted = false;
+  const aborted = new Promise((_, reject) => { onAbort = () => { interrupted = true; reject(new MailError('BUSY')); cancel(); }; });
+  const timer = setTimeout(onAbort, Math.max(0, deadline - performance.now()));
+  request.signal.addEventListener('abort', onAbort, { once: true });
+  if (request.signal.aborted) onAbort();
   try {
     for (;;) {
-      const { done, value } = await reader.read(); if (done) break;
+      const { done, value } = await Promise.race([reader.read(), aborted]);
+      if (interrupted) fail('BUSY');
+      if (done) break;
       length += value.byteLength;
-      if (length > 65536) { await reader.cancel(); fail('PAYLOAD_TOO_LARGE'); }
+      if (length > 65536) { cancel(); fail('PAYLOAD_TOO_LARGE'); }
       chunks.push(value);
     }
-  } finally { reader.releaseLock(); }
+  } finally {
+    clearTimeout(timer); request.signal.removeEventListener('abort', onAbort); reader.releaseLock();
+  }
   const bytes = new Uint8Array(length); let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return bytes;
@@ -34,9 +45,17 @@ export function createSyncApp({ store, gatewayKey, clock = Date.now, registry, c
     c.header('Cache-Control', 'no-store');
     const token = c.req.header('x-gateway-assertion'); if (!token) fail('UNAUTHORIZED');
     const streaming = c.req.method === 'PUT' && /^\/v1\/uploads\/[A-Za-z0-9_-]+$/.test(c.req.path);
-    const body = streaming ? new Uint8Array() : await work.parse(() => boundedBody(c.req.raw));
+    let body = new Uint8Array();
     const url = new URL(c.req.url);
-    const claims = await verifyGatewayAssertion({ key, token, method: c.req.method, path: url.pathname + url.search, body, now: clock(), consumeNonce: (ownerId, nonce, exp) => store.assertions.consume(ownerId, nonce, exp) });
+    const claims = await verifyGatewayAssertion({ key, token, method: c.req.method, path: url.pathname + url.search, clock,
+      readBody: async () => {
+        if (!streaming && c.req.raw.body) {
+          const deadline = performance.now() + 15000;
+          body = await work.request(() => boundedBody(c.req.raw, deadline));
+        }
+        return body;
+      },
+      consumeNonce: (ownerId, nonce, exp) => store.assertions.consume(ownerId, nonce, exp) });
     c.set('ownerId', claims.ownerId);
     c.set('body', body);
     await next();
