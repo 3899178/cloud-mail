@@ -1,6 +1,7 @@
 import { encodeSourceRef, decodeCursor, encodeCursor, fail } from '../../../shared/unified-mail/index.mjs';
 import { localDto } from './unified-local';
 import { syncRequest, boundedBody, parseJson } from './sync-gateway';
+import { parseMailSearch, mailSearchPredicate } from '../../../shared/unified-mail/search.mjs';
 const BATCH = 200;
 // Auxiliary index is operator-created. No DDL or changes to legacy mail schema here.
 async function advanceIndex(db) {
@@ -51,13 +52,16 @@ async function advanceIndex(db) {
 async function localPage(c, {
   limit,
   cursor,
-  accountId
+  accountId,
+  search
 }) {
   const db = c.env.db;
   await advanceIndex(db);
   const owner = c.get('user').userId;
   const filters = ['e.user_id=?', 'a.user_id=?', 'e.is_del=0', 'a.is_del=0', 'e.type=0'];
   const args = [owner, owner];
+  const filter = mailSearchPredicate(search, { subject: ['e.subject'], sender: ['e.name', 'e.send_email'], body: ['e.text', 'e.content'] });
+  if (filter.sql) { filters.push(filter.sql); args.push(...filter.args); }
   if (accountId) {
     filters.push('e.account_id=?');
     args.push(accountId);
@@ -76,6 +80,7 @@ export async function unifiedFeed(c) {
   const q = c.req.query(),
     limit = q.limit === undefined ? 50 : Number(q.limit);
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) fail('INVALID_INPUT');
+  const search = parseMailSearch(q.search, q.searchField);
   const source = q.source || 'all';
   if (!['all', 'cloud-mail', 'external'].includes(source)) fail('INVALID_INPUT');
   if (q.cursor) decodeCursor(q.cursor);
@@ -83,7 +88,8 @@ export async function unifiedFeed(c) {
   const local = source === 'external' ? [] : await localPage(c, {
     limit: limit + 1,
     cursor: q.cursor,
-    accountId: q.accountId
+    accountId: q.accountId,
+    search
   });
   let external = [],
     more = false,
@@ -94,6 +100,7 @@ export async function unifiedFeed(c) {
     });
     if (q.cursor) query.set('cursor', q.cursor);
     if (q.accountId) query.set('accountId', q.accountId);
+    if (search.text) { query.set('search', search.text); query.set('searchField', search.field); }
     const data = parseJson(await boundedBody(await syncRequest(c, {
       path: '/v1/messages?' + query.toString()
     }), 5 * 1024 * 1024));

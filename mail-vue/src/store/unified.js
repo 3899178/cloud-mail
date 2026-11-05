@@ -1,18 +1,28 @@
 import { defineStore } from 'pinia'
 import { session } from '@/auth/session.js'
 import { request } from '@/request/unified.js'
+import { parseMailSearch } from '../../../shared/unified-mail/search.mjs'
 const codeOf = e => e?.response?.data?.error?.code || e?.error?.code || e?.code || 'REQUEST_FAILED'
 const quiet = e => ['STALE_SESSION','ERR_CANCELED','AbortError'].includes(codeOf(e))
 const newer = (a,b) => a.receivedAt>b.receivedAt || (a.receivedAt===b.receivedAt && a.ref>b.ref)
 export const useUnifiedStore = defineStore('unified', {
   // Never persisted: source refs, bodies, upload capabilities and credentials.
-  state: () => ({ selection:{source:'all',accountId:null}, items:[], detail:null, accounts:[], localAccounts:[], accountsError:'', accountsLoading:false,
+  state: () => ({ selection:{source:'all',accountId:null}, search:{text:'',field:'all'}, items:[], detail:null, accounts:[], localAccounts:[], accountsError:'', accountsLoading:false,
     nextCursor:null, incomplete:false, resetRequired:false, sources:{}, loading:false, error:'', detailError:'',
     operation:null, operationError:'', listGeneration:0, detailGeneration:0, operationGeneration:0, accountGeneration:0 }),
   actions: {
+    setSearch(text,field='all') {
+      const next=parseMailSearch(text,field)
+      this.clearMessages()
+      this.search=next
+    },
     select(source,accountId=null) {
+      this.clearMessages()
+      this.selection={source,accountId}
+    },
+    clearMessages() {
       this.listGeneration++; this.detailGeneration++; this.operationGeneration++
-      this.selection={source,accountId}; this.items=[]; this.detail=null; this.nextCursor=null
+      this.items=[]; this.detail=null; this.nextCursor=null
       this.error=''; this.detailError=''; this.operation=null; this.operationError=''; this.loading=false
       this.incomplete=false; this.resetRequired=false; this.sources={}
     },
@@ -33,6 +43,7 @@ export const useUnifiedStore = defineStore('unified', {
       const lease=session.lease(), generation=++this.listGeneration
       const boundary=refresh && !append && !this.incomplete && !this.resetRequired ? this.items.at(-1) : null
       const query={source:this.selection.source,limit:50}
+      if(this.search.text){query.search=this.search.text;query.searchField=this.search.field}
       if(this.selection.accountId!==null)query.accountId=this.selection.accountId
       if(append)query.cursor=this.nextCursor
       this.loading=true; this.error=''

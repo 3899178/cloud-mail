@@ -64,7 +64,7 @@ export function createSyncApp({ store, gatewayKey, clock = Date.now, registry, c
   app.get('/v1/accounts/:id', c => c.json({ account: store.accounts.get(c.get('ownerId'), c.req.param('id')) }));
   app.get('/v1/messages', c => {
     const limit = c.req.query('limit');
-    return c.json(store.messages.list(c.get('ownerId'), { limit: limit === undefined ? 50 : Number(limit), cursor: c.req.query('cursor'), accountId: c.req.query('accountId') }));
+    return c.json(store.messages.list(c.get('ownerId'), { limit: limit === undefined ? 50 : Number(limit), cursor: c.req.query('cursor'), accountId: c.req.query('accountId'), search: c.req.query('search'), searchField: c.req.query('searchField') }));
   });
   app.get('/v1/messages/:ref', c => c.json({ message: store.messages.get(c.get('ownerId'), c.req.param('ref')) }));
   app.get('/v1/operations/:id', c => c.json({ operation: store.operations.get(c.get('ownerId'), c.req.param('id')) }));

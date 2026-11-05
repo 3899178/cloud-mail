@@ -33,6 +33,55 @@ const message = (ref, source='external') => ({ref,source,accountId:'1',receivedA
 const page = items => ({items,nextCursor:null,incomplete:false,resetRequired:false,sources:{local:'ready',external:'ready'}})
 const account = {id:'1',provider:'qq',address:'qq@test',status:'needs-auth',errorCode:'AUTH_REQUIRED'}
 
+describe('server-backed unified search',()=>{
+  function storeOnly(){setActivePinia(createPinia());session.advance();session.authenticated=true;return useUnifiedStore()}
+  it('submits field and text to the server and clears back to the unfiltered collection',async()=>{
+    api.request.mockImplementation(async(path,{query})=>page([message(query.search?'older-match':'head-mail')]))
+    const w=render(Unified);await flushPromises()
+    expect(w.find('[data-mail-search]').exists()).toBe(true)
+    await w.get('[data-search-text]').setValue(' 收据 ');await w.get('[data-search-field]').setValue('subject')
+    await w.get('[data-mail-search]').trigger('submit');await flushPromises()
+    expect(api.request).toHaveBeenLastCalledWith('/unified/messages',expect.objectContaining({query:expect.objectContaining({search:'收据',searchField:'subject',source:'all'})}))
+    expect(w.find('[data-message-ref="older-match"]').exists()).toBe(true)
+    await w.get('[data-clear-search]').trigger('click');await flushPromises()
+    expect(api.request.mock.calls.at(-1)[1].query.search).toBeUndefined()
+    expect(w.find('[data-message-ref="head-mail"]').exists()).toBe(true)
+  })
+  it('keeps the applied search when selecting another account and refreshing',async()=>{
+    api.request.mockResolvedValue(page([]));const w=render(Unified);await flushPromises()
+    expect(w.find('[data-mail-search]').exists()).toBe(true)
+    await w.get('[data-search-text]').setValue('invoice');await w.get('[data-search-field]').setValue('body')
+    await w.get('[data-mail-search]').trigger('submit');await flushPromises()
+    useUnifiedStore().select('external','1');await flushPromises()
+    await w.get('[data-refresh]').trigger('click');await flushPromises()
+    expect(api.request.mock.calls.at(-1)[1].query).toMatchObject({source:'external',accountId:'1',search:'invoice',searchField:'body'})
+  })
+  it('an older in-flight search cannot replace a newer search or reuse its selected body/cursor',async()=>{
+    const s=storeOnly();expect(typeof s.setSearch).toBe('function')
+    let oldResolve;api.request.mockImplementationOnce(()=>new Promise(resolve=>{oldResolve=resolve})).mockResolvedValueOnce(page([message('new-match')]))
+    s.setSearch('old','subject');const pending=s.load()
+    s.detail=message('old-detail');s.nextCursor='old-cursor'
+    s.setSearch('new','sender');expect(s.detail).toBeNull();expect(s.nextCursor).toBeNull()
+    await s.load();oldResolve(page([message('old-match')]));await pending
+    expect(s.items.map(m=>m.ref)).toEqual(['new-match']);expect(s.search).toEqual({text:'new',field:'sender'})
+  })
+  it('append and refresh retain the search over the entire loaded range',async()=>{
+    const s=storeOnly();expect(typeof s.setSearch).toBe('function')
+    const items=Array.from({length:120},(_,i)=>({...message('match-'+i),receivedAt:1000-i}))
+    api.request.mockImplementation(async(path,{query})=>{const start=query.cursor?Number(query.cursor):0;return {...page(items.slice(start,start+50)),nextCursor:start+50<items.length?String(start+50):null}})
+    s.setSearch('needle','all');await s.load();await s.load({append:true});await s.load({refresh:true})
+    expect(s.items).toHaveLength(100);expect(s.nextCursor).toBe('100')
+    expect(api.request.mock.calls.every(([,options])=>options.query.search==='needle'&&options.query.searchField==='all')).toBe(true)
+  })
+  it('clears visible draft search text as well as applied state when the owner session resets stores',async()=>{
+    api.request.mockResolvedValue(page([]));const w=render(Unified);await flushPromises()
+    await w.get('[data-search-text]').setValue('private query');await w.get('[data-search-field]').setValue('body')
+    await w.get('[data-mail-search]').trigger('submit');await flushPromises()
+    session.advance();useUnifiedStore().$reset();await flushPromises()
+    expect(w.get('[data-search-text]').element.value).toBe('');expect(w.get('[data-search-field]').element.value).toBe('all')
+  })
+})
+
 describe('background refresh of a paginated inbox',()=>{
   const rows=()=>Array.from({length:200},(_,i)=>({...message('mail-'+(i+1)),receivedAt:1000-i}))
   const result=(items,prefix,query={})=>{

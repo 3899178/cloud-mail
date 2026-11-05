@@ -8,6 +8,7 @@ import { schema } from './schema.mjs';
 import { choice, errorCode, integer, text } from './validation.mjs';
 import { createAttachments } from './attachments.mjs';
 import { createReconciliation } from './reconciliation.mjs';
+import { parseMailSearch, mailSearchPredicate } from '../../../../shared/unified-mail/search.mjs';
 
 const accountDto = r => ({ id: r.id, provider: r.provider, address: r.address, status: r.status, errorCode: r.error_code, createdAt: r.created_at });
 const messageDto = (r, detail = false) => ({ ref: r.ref, accountId: r.account_id, source: 'external', receivedAt: r.received_at, subject: r.subject, from: r.sender, unread: Boolean(r.unread), folder: r.folder, ...(detail ? { text: r.text_body, html: r.html_body } : {}) });
@@ -118,11 +119,13 @@ export function openStore({ dbPath, dataDir, masterKey, clock = Date.now }) {
         return { inserted, checkpoint: clean };
       });
     },
-    list(who, { limit = 50, cursor, accountId } = {}) {
+    list(who, { limit = 50, cursor, accountId, search, searchField } = {}) {
       owner(who); integer(limit, 1, 100);
+      const filter = mailSearchPredicate(parseMailSearch(search, searchField), { subject: ['subject'], sender: ['sender'], body: ['text_body', 'html_body'] });
       const after = cursor == null ? null : decodeCursor(cursor);
       const args = [who]; let where = 'owner_id=?';
       if (accountId !== undefined) { accountRow(who, accountId); where += ' AND account_id=?'; args.push(accountId); }
+      if (filter.sql) { where += ' AND ' + filter.sql; args.push(...filter.args); }
       if (after) { where += ' AND (received_at<? OR (received_at=? AND ref<?))'; args.push(after.receivedAt, after.receivedAt, after.ref); }
       const rows = all(`SELECT ref,account_id,received_at,subject,sender,unread,folder FROM messages WHERE ${where} ORDER BY received_at DESC,ref DESC LIMIT ?`, ...args, limit + 1);
       const more = rows.length > limit; const items = rows.slice(0, limit).map(r => messageDto(r));

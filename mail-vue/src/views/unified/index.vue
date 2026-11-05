@@ -1,12 +1,18 @@
 <template>
   <section class="unified-mailbox" :class="{'show-detail':!!store.detail}">
     <header class="unified-toolbar"><h1>{{selectedAddress || (store.selection.source==='all'?'全部邮箱':'外部邮箱')}}</h1><button data-refresh :disabled="store.loading" @click="refresh">刷新</button><button v-if="hasPerm('email:send')" @click="localCompose">本地写信</button><button :disabled="!store.accounts.length" @click="ui.externalComposerRef?.open()">外部写信</button></header>
+    <form data-mail-search class="unified-search" role="search" aria-label="搜索已收录邮件" @submit.prevent="submitSearch">
+      <select data-search-field v-model="searchField" aria-label="搜索字段"><option value="all">全部内容</option><option value="subject">主题</option><option value="sender">发件人</option><option value="body">正文</option></select>
+      <input data-search-text v-model="searchText" type="search" maxlength="200" aria-label="搜索关键词" placeholder="搜索当前邮箱范围内已收录的邮件" />
+      <button type="submit">搜索</button><button data-clear-search type="button" @click="clearSearch">清除</button>
+      <small v-if="store.search.text" role="status">正在搜索：{{store.search.text}}</small>
+    </form>
     <p v-if="store.incomplete" class="status-banner" role="status">邮件列表不完整：部分邮箱暂不可用，已显示可读取的邮件；恢复后将刷新列表。<button @click="refresh">重新读取</button></p>
     <p v-if="store.error" class="status-banner" role="alert">{{store.error==='LOCAL_INDEX_NOT_READY'?'本地邮件索引正在初始化，请稍候。':`读取失败：${store.error}`}}<button @click="refresh">重试</button><button @click="router.push('/inbox')">打开原收件箱</button></p>
     <p v-if="store.loading" class="status-banner" role="status">正在读取邮件…</p>
     <div class="unified-columns">
       <section class="message-list" aria-label="统一邮件列表">
-        <p v-if="!store.loading && !store.error && !store.items.length" class="empty">暂无邮件</p>
+        <p v-if="!store.loading && !store.error && !store.items.length" class="empty">{{store.search.text?'未找到匹配邮件':'暂无邮件'}}</p>
         <button v-for="message in store.items" :key="message.ref" :data-message-ref="message.ref" class="message-row" :class="{unread:message.unread,selected:store.detail?.ref===message.ref}" @click="store.open(message.ref)">
           <span class="row-top"><strong>{{message.from || '未知发件人'}}</strong><time>{{date(message.receivedAt)}}</time></span>
           <span>{{message.subject || '（无主题）'}}</span>
@@ -47,6 +53,8 @@ import {openLocalComposer} from '@/utils/local-compose.js'
 import SafeBody from '@/components/unified-mail/SafeBody.vue'
 import {accountStatus,operationStatus,safeCode,stale} from '@/components/unified-mail/status.js'
 const store=useUnifiedStore(),ui=useUiStore(),router=useRouter(),confirmTrash=ref(false),actionError=ref('')
+const searchText=ref(store.search.text),searchField=ref(store.search.field)
+watch(()=>store.search,value=>{searchText.value=value.text;searchField.value=value.field},{flush:'sync'})
 const localStore=useAccountStore(),owner=useUserStore()
 const selectedAddress=computed(()=>store.selection.source==='external'?store.accounts.find(a=>a.id===store.selection.accountId)?.address:'')
 const operationBusy=computed(()=>['queued','running'].includes(store.operation?.state))
@@ -65,6 +73,11 @@ function cancelImport(notice=false){importRevision++;importController?.abort();i
 const viewLease=session.lease()
 function backToList(){store.detailGeneration++;store.operationGeneration++;store.detail=null;store.operation=null;confirmTrash.value=false}
 function refresh(){indexAttempts=0;clearTimeout(retryTimer);store.load({refresh:true})}
+function submitSearch(){
+  try{store.setSearch(searchText.value,searchField.value);searchText.value=store.search.text;indexAttempts=0;clearTimeout(retryTimer);store.load()}
+  catch{store.error='INVALID_INPUT'}
+}
+function clearSearch(){searchText.value='';searchField.value='all';submitSearch()}
 function localCompose(){ui.writerRef?.open()}
 async function compose(kind){
   cancelImport()
@@ -93,6 +106,7 @@ onMounted(()=>{store.load();refreshTimer=setInterval(()=>{if(viewLease.current()
 onBeforeUnmount(()=>{alive=false;cancelImport();store.listGeneration++;store.detailGeneration++;store.operationGeneration++;store.loading=false;clearTimeout(retryTimer);clearTimeout(pollTimer);clearInterval(refreshTimer);document.removeEventListener('visibilitychange',visible)})
 </script>
 <style scoped>
+.unified-search{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--el-border-color);flex-shrink:0}.unified-search input{flex:1;min-width:160px}.unified-search input,.unified-search select{padding:8px;color:var(--el-text-color-primary);background:var(--el-bg-color);border:1px solid var(--el-border-color);border-radius:6px}.unified-search small{flex-basis:100%;overflow-wrap:anywhere;color:var(--el-text-color-secondary)}
 .unified-mailbox{display:flex;flex-direction:column;min-height:0;height:100%;min-width:0;overflow:hidden;color:var(--el-text-color-primary)}.unified-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--el-border-color);flex-shrink:0}.unified-toolbar h1{font-size:18px;margin:0 auto 0 0;overflow-wrap:anywhere}.unified-columns{display:grid;grid-template-columns:minmax(240px,38%) minmax(0,1fr);flex:1;min-height:0}.message-list,.message-detail{overflow-y:auto;min-width:0;min-height:0;overscroll-behavior:contain}.message-list{border-right:1px solid var(--el-border-color)}.message-row{width:100%;border:0;border-radius:0;border-bottom:1px solid var(--el-border-color);padding:14px 16px;text-align:left;display:grid;gap:8px;line-height:1.45;overflow-wrap:anywhere}.message-row.unread{box-shadow:inset 3px 0 var(--el-color-primary)}.message-row.selected{background:var(--el-color-primary-light-9)}.message-row small,.message-meta,.privacy-note{font-size:12px;color:var(--el-text-color-secondary)}.row-top{display:flex;gap:10px;justify-content:space-between;align-items:start}.row-top time{font-size:11px;flex-shrink:0;font-weight:normal}.row-top strong{font-weight:inherit}.unread .row-top strong{font-weight:700}.message-detail{padding:16px 22px}.message-detail h2{font-size:22px;overflow-wrap:anywhere}.sender{overflow-wrap:anywhere}.detail-actions{display:flex;gap:8px;flex-wrap:wrap}.plain-body{white-space:pre-wrap;font:inherit;overflow-wrap:anywhere;line-height:1.6}.attachments{display:grid;gap:12px;margin-top:28px}.attachments a{color:var(--el-color-primary);overflow-wrap:anywhere}.empty{padding:20px;color:var(--el-text-color-secondary)}button{background:var(--el-bg-color);color:inherit;border:1px solid var(--el-border-color);border-radius:5px;padding:7px 10px;cursor:pointer}button:disabled{opacity:.5;cursor:default}.status-banner{margin:0;padding:10px 16px;background:var(--el-fill-color-light);font-size:13px;line-height:1.5}.status-banner button{margin-left:8px}.load-more{margin:15px}.message-row:hover{background:var(--el-fill-color-light)}[role=alert]{color:var(--el-color-danger)}
 @media(max-width:1000px){.unified-columns{grid-template-columns:minmax(220px,43%) minmax(0,1fr)}.row-top{flex-wrap:wrap}}
 @media(max-width:767px){.unified-toolbar{padding:10px}.unified-toolbar h1{font-size:16px;width:100%}.unified-columns{display:block;position:relative}.message-list,.message-detail{height:100%;width:100%}.message-detail{display:none;padding:12px}.show-detail .message-detail{display:block}.show-detail .message-list{display:none}.message-detail h2{font-size:18px}}
