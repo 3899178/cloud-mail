@@ -48,7 +48,7 @@ export async function imapFixture(t) {
           const uidNext = Math.max(state.uidNext.get(mailboxKey) || 1, Math.max(0, ...messages.map(m => Number(m.uid))) + 1);
           state.uidNext.set(mailboxKey, uidNext);
           if (state.condstore) socket.write(`* OK [HIGHESTMODSEQ ${state.modseq}] modseq\r\n`);
-          socket.write(`* FLAGS (\\Seen \\Draft)\r\n* ${messages.length} EXISTS\r\n* OK [UIDVALIDITY ${state.validity}] validity\r\n* OK [UIDNEXT ${uidNext}] next\r\n${tag} OK [READ-WRITE] selected\r\n`);
+          socket.write(`* FLAGS (\\Seen \\Draft)\r\n* ${messages.length} EXISTS\r\n* OK [UIDVALIDITY ${state.validity}] validity\r\n${state.omitUidNext ? '' : `* OK [UIDNEXT ${uidNext}] next\r\n`}${tag} OK [READ-WRITE] selected\r\n`);
         } else if (command === 'UID' && / SEARCH /i.test(line)) {
           socket.write(`* SEARCH ${(state.folders.get(selected) || []).filter(m => m.uid !== state.omitSearchUid).map(m => m.uid).join(' ')}\r\n`); ok();
         } else if (command === 'FETCH' || (command === 'UID' && / UID FETCH |^\S+ UID FETCH /i.test(line))) {

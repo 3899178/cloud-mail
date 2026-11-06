@@ -46,7 +46,12 @@ export async function createImapSession({ account, config, auth, signal, endpoin
     const messageId = m.envelope?.messageId || '';
     return { id: String(m.uid), receivedAt, unread: !m.flags?.has('\\Seen'), stableId: m.emailId, messageId, fingerprint: createHash('sha256').update(JSON.stringify([messageId, receivedAt, ...(messageId ? [] : [m.size, m.envelope?.from, m.envelope?.subject])])).digest('hex') };
   };
-  const token = () => ({ v: 1, uidNext: String(client.mailbox.uidNext), exists: client.mailbox.exists, modseq: client.enabled.has('CONDSTORE') && !client.mailbox.noModseq && client.mailbox.highestModseq ? String(client.mailbox.highestModseq) : null });
+  // Some servers omit UIDNEXT even from STATUS. FETCH then populates a local
+  // estimate; do not mistake that estimate for a server-reported change.
+  const token = (reportedUidNext = true) => {
+    const uidNext = reportedUidNext && Number.isSafeInteger(client.mailbox.uidNext) && client.mailbox.uidNext > 0 ? String(client.mailbox.uidNext) : null;
+    return { v: 1, uidNext, exists: client.mailbox.exists, modseq: uidNext && client.enabled.has('CONDSTORE') && !client.mailbox.noModseq && client.mailbox.highestModseq ? String(client.mailbox.highestModseq) : null };
+  };
   const same = (a, b) => a.uidNext === b.uidNext && a.exists === b.exists && a.modseq === b.modseq;
   const fullQuery = { uid: true, flags: true, internalDate: true, envelope: true, size: true, emailId: true, labels: true };
   async function scan(query, options = {}) {
@@ -78,6 +83,10 @@ export async function createImapSession({ account, config, auth, signal, endpoin
         return !labels.has('\\Sent') || folder.toUpperCase() === 'INBOX' || labels.has('\\Inbox') || receivedUids.has(String(m.uid)) || receivedStableIds.has(m.emailId || m.record?.stableId);
       };
       let saved; try { saved = JSON.parse(checkpoint?.cursor || 'null'); } catch {}
+      const previousNext = saved?.uidNext || saved?.observedUidNext;
+      const previousBoundary = checkpoint?.uidValidity === uidValidity && typeof previousNext === 'string' && /^[1-9]\d*$/.test(previousNext) ? previousNext : null;
+      let observedUidNext = previousBoundary ? BigInt(previousBoundary) : 1n;
+      const observe = rows => { for (const m of rows) { const next = BigInt(m.uid) + 1n; if (next > observedUidNext) observedUidNext = next; } };
       const reusable = saved?.v === 1 && checkpoint.uidValidity === uidValidity && Number.isSafeInteger(saved.auditAt) && saved.auditAt <= clock() && clock() - saved.auditAt < 300000;
       let messages; let auditAt = saved?.auditAt; let lightSignature;
       if (reusable && before.modseq && saved.modseq && same(before, saved)) {
@@ -99,6 +108,7 @@ export async function createImapSession({ account, config, auth, signal, endpoin
           if (pending.size) fail('SYNC_FAILED');
         } else {
           const light = await scan({ uid: true, flags: true, labels: true, emailId: true });
+          observe(light);
           lightSignature = lightDigest(light);
           const ids = new Set(light.filter(normalMessage).map(m => String(m.uid)));
           for (const id of known.keys()) if (!ids.has(id)) known.delete(id);
@@ -117,19 +127,19 @@ export async function createImapSession({ account, config, auth, signal, endpoin
         }
         messages = [...known.values()];
       } else {
-        const rows = await scan(fullQuery); messages = rows.filter(normalMessage).map(metadata); auditAt = clock();
+        const rows = await scan(fullQuery); observe(rows); messages = rows.filter(normalMessage).map(metadata); auditAt = clock();
         if (!before.modseq) lightSignature = lightDigest(rows);
       }
-      if (!same(before, token())) fail('SYNC_FAILED');
+      if (!same(before, token(before.uidNext !== null))) fail('SYNC_FAILED');
       // A filter update can expose an old UID absent from the earlier catalog.
       // Preserve its pre-binding exclusion; a genuinely new UID may still have
       // an old INTERNALDATE (APPEND) and must keep normal admission semantics.
-      if (saved?.v === 1 && checkpoint.uidValidity === uidValidity && /^[1-9]\d*$/.test(saved.uidNext) && Number.isSafeInteger(baselineAt)) {
-        messages = messages.map(m => !receivedUids.has(m.id) && BigInt(m.id) < BigInt(saved.uidNext) && m.receivedAt < baselineAt ? { ...m, historical: true } : m);
+      if (saved?.v === 1 && previousBoundary && Number.isSafeInteger(baselineAt)) {
+        messages = messages.map(m => !receivedUids.has(m.id) && BigInt(m.id) < BigInt(previousBoundary) && m.receivedAt < baselineAt ? { ...m, historical: true } : m);
       }
       messages.sort((a, b) => Number(a.id) - Number(b.id));
       if (messages.length > 20000 || Buffer.byteLength(JSON.stringify(messages)) > 8 * 1024 * 1024) fail('CAPACITY_EXCEEDED');
-      return { uidValidity, cursor: JSON.stringify({ ...before, auditAt }), messages, lightSignature };
+      return { uidValidity, cursor: JSON.stringify({ ...before, ...(!before.uidNext ? { observedUidNext: String(observedUidNext) } : {}), auditAt }), messages, lightSignature };
     } finally { lock.release(); }
   }
   function lightDigest(rows) { return createHash('sha256').update(JSON.stringify(rows.map(m => [String(m.uid), [...(m.flags || [])].sort(), [...(m.labels || [])].sort()]))).digest('hex'); }

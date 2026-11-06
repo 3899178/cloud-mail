@@ -1,0 +1,63 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { imapFixture, wireMime } from './fixtures.mjs';
+import { fixture, owner } from '../core/helpers.mjs';
+import { openStore } from '../../src/core/store.mjs';
+import { createImapSession } from '../../src/providers/imap.mjs';
+import { createSyncEngine } from '../../src/sync/engine.mjs';
+
+for (const condstore of [false, true]) test(`missing UIDNEXT keeps safe durable inventory (CONDSTORE=${condstore})`, async t => {
+  const imap = await imapFixture(t); imap.state.omitUidNext = true; imap.state.condstore = condstore;
+  const f = await fixture(t); let store = f.store;
+  const a = store.accounts.create(owner, { id: 'missing-next', provider: '163', address: 'fixture@example.test' });
+  const rows = imap.state.folders.get('INBOX');
+  const message = uid => ({ uid, key: `mail-${uid}`, subject: 'fixture', unread: true, raw: wireMime(`mail-${uid}`), internalDate: '01-Jan-2020 12:00:00 +0000' });
+  rows.push(message(10), message(20));
+  const registry = { open: () => createImapSession({ account: a, config: { imap: { host: 'fixture.test', port: imap.port, secure: true } }, auth: async () => ({ user: a.address, pass: 'fixture' }), tlsOptions: { ca: imap.ca }, endpointResolver: async () => ({ host: '127.0.0.1', port: imap.port, servername: 'fixture.test' }) }) };
+  let engine = createSyncEngine({ store, registry });
+  const sync = () => engine.syncAccount({ ownerId: owner, accountId: a.id });
+  assert.equal((await sync()).status, 'active', 'SELECT without UIDNEXT must not fail after FETCH estimates it');
+  assert.equal(store.messages.list(owner).items.length, 0, 'old bodies are not imported');
+  assert.equal(store.sources.catalog(owner, a.id).length, 2);
+  store.close(); store = openStore(f.options); t.after(() => store.close()); engine = createSyncEngine({ store, registry });
+  assert.equal((await sync()).status, 'active', 'empty folders and restart remain valid');
+  rows.push(message(30));
+  assert.equal((await sync()).status, 'active');
+  const received = store.messages.list(owner).items;
+  assert.equal(received.length, 1, 'new UID is admitted even when APPEND uses an old date');
+  const checkpoint = store.checkpoints.get(owner, a.id, 'INBOX');
+  imap.state.omitFetchUid = 10;
+  assert.equal((await sync()).status, 'error');
+  assert.deepEqual(store.checkpoints.get(owner, a.id, 'INBOX'), checkpoint, 'partial inventory cannot advance checkpoint');
+  assert.equal(store.messages.list(owner).items.length, 1, 'partial inventory cannot prune content');
+  delete imap.state.omitFetchUid;
+  rows[2].unread = false;
+  assert.equal((await sync()).status, 'active');
+  assert.equal(store.messages.get(owner, received[0].ref).unread, false);
+  rows.pop();
+  assert.equal((await sync()).status, 'active');
+  assert.equal(store.messages.list(owner).items.length, 0, 'source removal is reconciled');
+  // Expunging the largest UID must not lower the durable historical boundary.
+  rows.push(message(25));
+  assert.equal((await sync()).status, 'active');
+  assert.equal(store.messages.list(owner).items.length, 0, 'an exposed old UID stays historical after the high UID disappears');
+  rows.push(message(31));
+  assert.equal((await sync()).status, 'active');
+  assert.equal(store.messages.list(owner).items.length, 1);
+  store.close();
+});
+
+test('missing UIDNEXT validation rejects a same-count replacement and changed flags', async t => {
+  const imap = await imapFixture(t); imap.state.omitUidNext = true;
+  const a = { address: 'fixture@example.test' };
+  const rows = imap.state.folders.get('INBOX');
+  rows.push({ uid: 5, key: 'test', subject: 'fixture', unread: true, raw: wireMime('test') });
+  const session = await createImapSession({ account: a, config: { imap: { host: 'fixture.test', port: imap.port, secure: true } }, auth: async () => ({ user: a.address, pass: 'fixture' }), tlsOptions: { ca: imap.ca }, endpointResolver: async () => ({ host: '127.0.0.1', port: imap.port, servername: 'fixture.test' }) });
+  t.after(() => session.close());
+  const snapshot = await session.snapshot('INBOX');
+  assert.equal(await session.validateSnapshot('INBOX', snapshot), true);
+  rows[0].unread = false;
+  assert.equal(await session.validateSnapshot('INBOX', snapshot), false);
+  rows[0].unread = true; rows[0].uid = 6;
+  assert.equal(await session.validateSnapshot('INBOX', snapshot), false);
+});
