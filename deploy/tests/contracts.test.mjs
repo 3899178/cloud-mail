@@ -6,6 +6,18 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 const root = resolve(import.meta.dirname, '../..');
+test('selected image context can load the actual shared search dependency used by the runtime store', async () => {
+  const { createContext } = await import('../build-context.mjs');
+  const temporary = mkdtempSync(join(tmpdir(), 'mail-search-context-'));
+  try {
+    const staged = join(temporary, 'selected');
+    const manifest = createContext({ root, destination: staged });
+    assert.ok(manifest.files.some(file => file.path === 'shared/unified-mail/search.mjs'), 'runtime search dependency must survive context selection');
+    const { parseMailSearch } = await import(pathToFileURL(join(staged, 'shared/unified-mail/search.mjs')));
+    assert.deepEqual(parseMailSearch(' 中文 ', 'body'), { text: '中文', field: 'body' });
+    assert.ok(readFileSync(join(staged, '.dockerignore'), 'utf8').includes('!shared/unified-mail/search.mjs'));
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+});
 test('ordinary main merge cannot deploy Worker or initialize production database', () => {
   const workflow = readFileSync(join(root, '.github/workflows/deploy-cloudflare.yml'), 'utf8');
   assert.doesNotMatch(workflow, /push:|secrets\.|wrangler deploy|\/api\/init\/|delete-workflow-runs/);

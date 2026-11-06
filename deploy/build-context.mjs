@@ -8,7 +8,7 @@ export function allowed(path) {
   if (path.includes('\\') || path.split('/').some(s => s === '..' || s.startsWith('.'))) return false;
   if (/\.(?:db|sqlite\w*|eml|log|pem|key|p12|jks|env|sql|zip|tar|gz)$/i.test(path)) return false;
   if (/^services\/proton-helper\/(?:vendor|third_party)\//.test(path) && !(/\.(?:go|mod|sum|s|h|c|md)$/.test(path) || /\/(?:LICENSE(?:\.txt)?|COPYING|NOTICE|AUTHORS|PATENTS|modules\.txt)$/.test(path))) return false;
-  return /^(?:shared\/unified-mail\/index\.mjs|mail-worker\/package\.json|services\/mail-sync\/(?:package(?:-lock)?\.json|(?:src|tests)\/.+\.mjs)|services\/proton-helper\/(?:[^/]+\.(?:go|mod|sum)|(?:vendor|third_party\/hydroxide)\/.+)|deploy\/(?:Dockerfile|pins\.json|runtime\/[^/]+\.go|fixtures\/[^/]+\.(?:mjs|go)|linux-suites\.mjs))$/.test(path)
+  return /^(?:shared\/unified-mail\/(?:index|search)\.mjs|mail-worker\/package\.json|services\/mail-sync\/(?:package(?:-lock)?\.json|(?:src|tests)\/.+\.mjs)|services\/proton-helper\/(?:[^/]+\.(?:go|mod|sum)|(?:vendor|third_party\/hydroxide)\/.+)|deploy\/(?:Dockerfile|pins\.json|runtime\/[^/]+\.go|fixtures\/[^/]+\.(?:mjs|go)|linux-suites\.mjs))$/.test(path)
     && !/(?:^|\/)(?:node_modules|\.data|backups|cache|logs|testdata\/private)(?:\/|$)/.test(path);
 }
 export function createContext({ root = rootDefault, destination }) {
