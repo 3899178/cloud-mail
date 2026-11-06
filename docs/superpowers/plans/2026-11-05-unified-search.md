@@ -32,21 +32,21 @@
 
 **Files:** `shared/unified-mail/search.mjs`; `services/mail-sync/src/{core/store,app}.mjs`; `mail-worker/src/service/unified-feed.js`; matching service core and Worker feed tests.
 
-- [ ] Write and observe failing real SQLite/service/Worker tests for literal fields, tenant/account exclusion, pagination, bounded invalid inputs and forwarding the normalized query.
-- [ ] Implement shared parsing/escaping and source-specific fixed predicates before pagination. Keep existing empty-query behavior.
-- [ ] Run targeted tests and complete relevant suites; commit.
+- [x] Write and observe failing real SQLite/service/Worker tests for literal fields, tenant/account exclusion, pagination, bounded invalid inputs and forwarding the normalized query.
+- [x] Implement shared parsing/escaping and source-specific fixed predicates before pagination. Keep existing empty-query behavior.
+- [x] Run targeted tests and complete relevant suites; commit.
 
 ## Task 2: Unified search form and request lifecycle
 
 **Files:** `mail-vue/src/{store/unified.js,views/unified/index.vue}` and `mail-vue/test/components/unified.test.js`.
 
-- [ ] Write and observe failing tests for submit/clear, account scope, append/refresh and delayed old replies; search whole server collection rather than filtering loaded rows.
-- [ ] Implement accessible search form, explicit submit/clear, memory-only applied search and generation resets.
-- [ ] Run frontend and integration regressions, production build; commit.
+- [x] Write and observe failing tests for submit/clear, account scope, append/refresh and delayed old replies; search whole server collection rather than filtering loaded rows.
+- [x] Implement accessible search form, explicit submit/clear, memory-only applied search and generation resets.
+- [x] Run frontend and integration regressions, production build; commit.
 
 ## Task 3: Review and guarded personal rollout
 
-- [ ] One scoped review of this feature; one consolidated fix wave with regression tests for important findings.
-- [ ] Build/test/publish the immutable Linux image through the existing protected workflow; independently verify the published image.
-- [ ] Capture current data/config backup and roll out using current runtime identity and personal-owner restriction. Reconcile actual Worker/runtime state, test owned existing mail through read-only searches, preserve previous versions and recover on failure.
-- [ ] Publish source and accurate acceptance evidence. Keep unobserved browser/provider/50-account/Android checks explicitly open.
+- [x] One scoped review of this feature; one consolidated fix wave with regression tests for important findings.
+- [x] Build/test/publish the immutable Linux image through the existing protected workflow; independently verify the published image.
+- [x] Capture current data/config backup and roll out using current runtime identity and personal-owner restriction. Reconcile actual Worker/runtime state, test owned existing mail through read-only searches, preserve previous versions and recover on failure.
+- [x] Publish source and accurate acceptance evidence. Keep unobserved browser/provider/50-account/Android checks explicitly open.
