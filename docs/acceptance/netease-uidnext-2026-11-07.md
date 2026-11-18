@@ -1,6 +1,6 @@
 # NetEase missing UIDNEXT compatibility — candidate evidence
 
-Status: candidate implemented and locally verified; production still runs the previous image. This is not a claim of completed NetEase receive/send acceptance.
+Historical candidate evidence. Production deployment and its remaining acceptance limits are recorded in [the 2026-11-18 release evidence](netease-web-2026-11-18.md). The sections below describe the pre-deployment investigation, not the current deployment state.
 
 ## Observed failure
 

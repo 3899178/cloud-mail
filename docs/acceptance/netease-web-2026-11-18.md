@@ -1,0 +1,14 @@
+# NetEase web repair deployment — 2026-11-18
+
+The personal production web service now runs source `588e4097c83981e8f2c417f6b6bd13f138d7906f`. The existing 163, 126 and yeah accounts progressed from `SYNC_FAILED` to successful synchronization with durable checkpoints. The authenticated formal web page displayed the NetEase accounts as synchronized, and selecting 126 displayed its collected mail. New owner-operated mail/attachment and read/delete reconciliation acceptance remains open.
+
+## Validation
+
+- [Linux publication run 42264760689](https://github.com/3899178/cloud-mail-build/actions/runs/42264760689) and both publication/anonymous verification jobs completed successfully. Service tests: 133/133, deployment tests: 47/47, no skips. The existing Go/Node bridge gates and synthetic capacity/lifecycle checks also passed. Synthetic memory peak reached 335646720 bytes against a 335544320-byte configured limit, with reclaim pressure and no OOM; this is not acceptance of 50 real accounts on AWS.
+- Accepted image: `ghcr.io/3899178/cloud-mail-build/mail-sync@sha256:4298f9abd8a8d89a1d0261b176ae93bb9dc9f7a688f4b75d16c1b27cb81aff46`. Tested configuration: `sha256:4d629be5621628c2f4ed40da09f0927e8eef5bd0f7ee5c0e9955d30791a984fe`. The AWS cache was independently verified against that configuration and all twelve compressed/uncompressed layer hashes.
+- Fresh encrypted runtime backup was captured at 2026-11-18 03:39:52 UTC. Download, owner-protected backup-key readback, isolated restore, SQLite integrity, ten encrypted credential records and attachment integrity were verified. The service resumed before restore verification.
+- Fourteen Linux updater recovery tests passed. The one guarded update completed at 03:42:46 UTC, preserving ten account identities, ten credential ciphertexts, schema version 1 and the other nine application containers. The update unit completed successfully and its recovery timer was inactive. The previous image remains available for rollback.
+- After deployment, each NetEase account had two folder checkpoints and one collected message. A database count found no NetEase message body dated before its account binding. This is a bounded live observation; historical exclusion and old-date new UID behavior have separate protocol regression tests.
+- Existing QQ, school and Gmail message counts were preserved. iCloud and two Gmail accounts already required reauthorization in the fresh pre-upgrade backup; the same errors persisted after deployment. Outlook remains pending application authorization.
+
+This change updates the AWS sync runtime only. The already released web search UI and production Cloudflare Worker were not redeployed. Complete provider acceptance, multiuser/50-account resource acceptance, Outlook/Hotmail, Proton and signed Android/Honor delivery remain unfinished parts of the approved overall goal.
