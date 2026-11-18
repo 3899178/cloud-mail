@@ -35,6 +35,36 @@ test('real TLS IMAP/SMTP: auth, folder inventory, MIME bytes, source flags/trash
   await session.close(); imap.state.authFailure = true;
   await assert.rejects(createImapSession(options), error => error.authenticationFailed === true);
 });
+test('IMAP trash requires native MOVE or targeted UID EXPUNGE', async t => {
+  const { createImapSession } = await import('../../src/providers/imap.mjs');
+  for (const uidplus of [false, true]) await t.test(`UIDPLUS=${uidplus} without MOVE`, async t => {
+    const imap = await imapFixture(t);
+    imap.state.move = false;
+    imap.state.uidplus = uidplus;
+    const inbox = imap.state.folders.get('INBOX');
+    inbox.push(
+      { uid: 3, key: 'target', subject: 'target', raw: wireMime('target') },
+      { uid: 4, key: 'other', subject: 'other', raw: wireMime('other'), deleted: true },
+    );
+    const session = await createImapSession({ account: {}, config: { imap: { host: 'fixture.test', port: imap.port, secure: true } },
+      auth: async () => ({ user: 'fixture@example.test', pass: 'fixture-only' }), tlsOptions: { ca: imap.ca },
+      endpointResolver: async () => ({ host: '127.0.0.1', port: imap.port, servername: 'fixture.test' }) });
+    t.after(() => session.close());
+    const target = { folder: 'INBOX', uidValidity: '100', remoteId: '3' };
+    if (uidplus) {
+      await session.trash(target);
+      assert.deepEqual(inbox.map(m => m.uid), [4]);
+      assert.deepEqual(imap.state.folders.get('Trash').map(m => m.uid), [3]);
+      assert.ok(imap.state.commands.some(line => / UID EXPUNGE 3$/.test(line)));
+    } else {
+      await assert.rejects(session.trash(target), { code: 'PROVIDER_UNAVAILABLE' });
+      assert.deepEqual(inbox.map(m => m.uid), [3, 4]);
+      assert.equal(imap.state.folders.get('Trash').length, 0);
+      assert.ok(!imap.state.commands.some(line => / (COPY|STORE|EXPUNGE)(?: |$)/.test(line)));
+    }
+  });
+});
+
 test('wire adapters feed durable synchronization and uncertain-send ledger end to end', async t => {
   const imap = await imapFixture(t); const smtp = await smtpFixture(t); const { store } = await fixture(t);
   const account = store.accounts.create(owner, { id: 'durable-wire', provider: 'imap', address: 'user@example.test' });

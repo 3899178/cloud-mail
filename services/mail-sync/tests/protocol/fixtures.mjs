@@ -31,7 +31,7 @@ export async function imapFixture(t) {
           continue;
         }
         const ok = () => socket.write(`${tag} OK completed\r\n`);
-        if (command === 'CAPABILITY') { socket.write(`* CAPABILITY IMAP4rev1 UIDPLUS MOVE${state.condstore ? ' ENABLE CONDSTORE' : ''}${state.gmail ? ' X-GM-EXT-1' : ''}\r\n`); ok(); }
+        if (command === 'CAPABILITY') { socket.write(`* CAPABILITY IMAP4rev1${state.uidplus === false ? '' : ' UIDPLUS'}${state.move === false ? '' : ' MOVE'}${state.condstore ? ' ENABLE CONDSTORE' : ''}${state.gmail ? ' X-GM-EXT-1' : ''}\r\n`); ok(); }
         else if (command === 'ENABLE') { socket.write('* ENABLED CONDSTORE\r\n'); ok(); }
         else if (command === 'LOGIN') socket.write(`${tag} ${state.authFailure ? 'NO [AUTHENTICATIONFAILED] rejected' : 'OK authenticated'}\r\n`);
         else if (command === 'LIST' || command === 'LSUB') {
@@ -79,7 +79,24 @@ export async function imapFixture(t) {
           ok();
         } else if (command === 'UID' && / STORE /i.test(line)) {
           const uid = Number(line.split(' ')[3]); const unread = /-FLAGS/.test(line); const messages = state.folders.get(selected) || [];
-          const m = messages.find(m => Number(m.uid) === uid); if (m) m.unread = unread; ok();
+          const m = messages.find(m => Number(m.uid) === uid);
+          if (m && /\\Deleted/i.test(line)) m.deleted = !unread;
+          else if (m) m.unread = unread;
+          ok();
+        } else if (command === 'UID' && / COPY /i.test(line)) {
+          const uid = Number(line.split(' ')[3]); const raw = line.split(' ').slice(4).join(' '); const destination = raw.startsWith('"') ? JSON.parse(raw) : raw;
+          const message = state.folders.get(selected)?.find(m => m.uid === uid);
+          if (message && state.folders.has(destination)) state.folders.get(destination).push({ ...message });
+          ok();
+        } else if (command === 'EXPUNGE' || (command === 'UID' && / EXPUNGE /i.test(line))) {
+          const wantedUid = command === 'UID' ? Number(line.split(' ')[3]) : undefined;
+          const messages = state.folders.get(selected) || [];
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (!messages[i].deleted || (wantedUid !== undefined && messages[i].uid !== wantedUid)) continue;
+            messages.splice(i, 1);
+            socket.write(`* ${i + 1} EXPUNGE\r\n`);
+          }
+          ok();
         } else if (command === 'UID' && / MOVE /i.test(line)) {
           const uid = Number(line.split(' ')[3]); const raw = line.split(' ').slice(4).join(' '); const destination = raw.startsWith('"') ? JSON.parse(raw) : raw;
           const messages = state.folders.get(selected) || []; const index = messages.findIndex(m => Number(m.uid) === uid);

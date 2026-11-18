@@ -1,4 +1,5 @@
 import { ImapFlow } from 'imapflow';
+import { hasCapability } from 'imapflow/lib/tools.js';
 import { createTransport } from 'nodemailer';
 import { createHash } from 'node:crypto';
 import { connect } from 'node:net';
@@ -184,7 +185,11 @@ export async function createImapSession({ account, config, auth, signal, endpoin
     async trash(location) {
       if (!inventory) await folders();
       const trash = inventory.find(f => folderKind(f) === 'trash'); if (!trash) fail('PROVIDER_UNAVAILABLE');
-      return locate(location, async () => { if (!await client.messageMove(location.remoteId, trash.path, { uid: true })) fail('SYNC_FAILED'); });
+      return locate(location, async () => {
+        // ImapFlow falls back to mailbox-wide EXPUNGE if MOVE and UIDPLUS are absent.
+        if (!hasCapability(client, 'MOVE') && !hasCapability(client, 'UIDPLUS')) fail('PROVIDER_UNAVAILABLE');
+        if (!await client.messageMove(location.remoteId, trash.path, { uid: true })) fail('SYNC_FAILED');
+      });
     },
     async send(message, { signal: sendSignal } = {}) {
       const smtp = await endpointResolver(config.smtp); const authValue = await auth();
